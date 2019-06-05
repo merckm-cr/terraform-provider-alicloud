@@ -9,9 +9,9 @@ import (
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ess"
-	"github.com/denverdino/aliyungo/slb"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudEssScalingGroup() *schema.Resource {
@@ -25,58 +25,65 @@ func resourceAlicloudEssScalingGroup() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"min_size": &schema.Schema{
+			"min_size": {
 				Type:         schema.TypeInt,
 				Required:     true,
-				ValidateFunc: validateIntegerInRange(0, 100),
+				ValidateFunc: validateIntegerInRange(0, 1000),
 			},
-			"max_size": &schema.Schema{
+			"max_size": {
 				Type:         schema.TypeInt,
 				Required:     true,
-				ValidateFunc: validateIntegerInRange(0, 100),
+				ValidateFunc: validateIntegerInRange(0, 1000),
 			},
-			"scaling_group_name": &schema.Schema{
+			"scaling_group_name": {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-			"default_cooldown": &schema.Schema{
+			"default_cooldown": {
 				Type:         schema.TypeInt,
 				Default:      300,
 				Optional:     true,
 				ValidateFunc: validateIntegerInRange(0, 86400),
 			},
-			"vswitch_id": &schema.Schema{
+			"vswitch_id": {
 				Type:       schema.TypeString,
 				Optional:   true,
 				Deprecated: "Field 'vswitch_id' has been deprecated from provider version 1.7.1, and new field 'vswitch_ids' can replace it.",
 			},
-			"vswitch_ids": &schema.Schema{
+			"vswitch_ids": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				ForceNew: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				MinItems: 1,
 			},
-			"removal_policies": &schema.Schema{
+			"removal_policies": {
 				Type:     schema.TypeSet,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				Optional: true,
 				MaxItems: 2,
 				MinItems: 1,
 			},
-			"db_instance_ids": &schema.Schema{
+			"db_instance_ids": {
 				Type:     schema.TypeSet,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				Optional: true,
 				ForceNew: true,
 				MinItems: 1,
 			},
-			"loadbalancer_ids": &schema.Schema{
+			"loadbalancer_ids": {
 				Type:     schema.TypeSet,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				Optional: true,
 				ForceNew: true,
-				MinItems: 1,
+				MinItems: 0,
+			},
+			"multi_az_policy": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      Priority,
+				ValidateFunc: validateAllowedStringValue([]string{string(Priority), string(Balance)}),
+				ForceNew:     true,
 			},
 		},
 	}
@@ -84,25 +91,33 @@ func resourceAlicloudEssScalingGroup() *schema.Resource {
 
 func resourceAliyunEssScalingGroupCreate(d *schema.ResourceData, meta interface{}) error {
 
-	args, err := buildAlicloudEssScalingGroupArgs(d, meta)
+	request, err := buildAlicloudEssScalingGroupArgs(d, meta)
 	if err != nil {
-		return err
+		return WrapError(err)
 	}
 
-	essconn := meta.(*AliyunClient).essconn
+	client := meta.(*connectivity.AliyunClient)
+	essService := EssService{client}
 
 	if err := resource.Retry(5*time.Minute, func() *resource.RetryError {
-		scaling, err := essconn.CreateScalingGroup(args)
+		raw, err := client.WithEssClient(func(essClient *ess.Client) (interface{}, error) {
+			return essClient.CreateScalingGroup(request)
+		})
 		if err != nil {
 			if IsExceptedError(err, EssThrottling) {
-				return resource.RetryableError(fmt.Errorf("CreateScalingGroup timeout and got an error: %#v.", err))
+				return resource.RetryableError(err)
 			}
-			return resource.NonRetryableError(fmt.Errorf("CreateScalingGroup got an error: %#v.", err))
+			return resource.NonRetryableError(err)
 		}
-		d.SetId(scaling.ScalingGroupId)
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*ess.CreateScalingGroupResponse)
+		d.SetId(response.ScalingGroupId)
 		return nil
 	}); err != nil {
-		return err
+		return WrapErrorf(err, DefaultErrorMsg, "alicloud_ess_scalinggroup", request.GetActionName(), AlibabaCloudSdkGoERROR)
+	}
+	if err := essService.WaitForEssScalingGroup(d.Id(), Inactive, DefaultTimeout); err != nil {
+		return WrapError(err)
 	}
 
 	return resourceAliyunEssScalingGroupUpdate(d, meta)
@@ -110,47 +125,49 @@ func resourceAliyunEssScalingGroupCreate(d *schema.ResourceData, meta interface{
 
 func resourceAliyunEssScalingGroupRead(d *schema.ResourceData, meta interface{}) error {
 
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	essService := EssService{client}
 
-	scaling, err := client.DescribeScalingGroupById(d.Id())
+	object, err := essService.DescribeEssScalingGroup(d.Id())
 	if err != nil {
 		if NotFoundError(err) {
 			d.SetId("")
 			return nil
 		}
-		return fmt.Errorf("Error Describe ESS scaling group Attribute: %#v", err)
+		return WrapError(err)
 	}
 
-	d.Set("min_size", scaling.MinSize)
-	d.Set("max_size", scaling.MaxSize)
-	d.Set("scaling_group_name", scaling.ScalingGroupName)
-	d.Set("default_cooldown", scaling.DefaultCooldown)
+	d.Set("min_size", object.MinSize)
+	d.Set("max_size", object.MaxSize)
+	d.Set("scaling_group_name", object.ScalingGroupName)
+	d.Set("default_cooldown", object.DefaultCooldown)
+	d.Set("multi_az_policy", object.MultiAZPolicy)
 	var polices []string
-	if len(scaling.RemovalPolicies.RemovalPolicy) > 0 {
-		for _, v := range scaling.RemovalPolicies.RemovalPolicy {
+	if len(object.RemovalPolicies.RemovalPolicy) > 0 {
+		for _, v := range object.RemovalPolicies.RemovalPolicy {
 			polices = append(polices, v)
 		}
 	}
 	d.Set("removal_policies", polices)
 	var dbIds []string
-	if len(scaling.DBInstanceIds.DBInstanceId) > 0 {
-		for _, v := range scaling.DBInstanceIds.DBInstanceId {
+	if len(object.DBInstanceIds.DBInstanceId) > 0 {
+		for _, v := range object.DBInstanceIds.DBInstanceId {
 			dbIds = append(dbIds, v)
 		}
 	}
 	d.Set("db_instance_ids", dbIds)
 
 	var slbIds []string
-	if len(scaling.LoadBalancerIds.LoadBalancerId) > 0 {
-		for _, v := range scaling.LoadBalancerIds.LoadBalancerId {
+	if len(object.LoadBalancerIds.LoadBalancerId) > 0 {
+		for _, v := range object.LoadBalancerIds.LoadBalancerId {
 			slbIds = append(slbIds, v)
 		}
 	}
 	d.Set("loadbalancer_ids", slbIds)
 
 	var vswitchIds []string
-	if len(scaling.VSwitchIds.VSwitchId) > 0 {
-		for _, v := range scaling.VSwitchIds.VSwitchId {
+	if len(object.VSwitchIds.VSwitchId) > 0 {
+		for _, v := range object.VSwitchIds.VSwitchId {
 			vswitchIds = append(vswitchIds, v)
 		}
 	}
@@ -161,84 +178,101 @@ func resourceAliyunEssScalingGroupRead(d *schema.ResourceData, meta interface{})
 
 func resourceAliyunEssScalingGroupUpdate(d *schema.ResourceData, meta interface{}) error {
 
-	conn := meta.(*AliyunClient).essconn
-	args := ess.CreateModifyScalingGroupRequest()
-	args.ScalingGroupId = d.Id()
-
-	d.Partial(true)
+	client := meta.(*connectivity.AliyunClient)
+	request := ess.CreateModifyScalingGroupRequest()
+	request.ScalingGroupId = d.Id()
 
 	if d.HasChange("scaling_group_name") {
-		args.ScalingGroupName = d.Get("scaling_group_name").(string)
-		d.SetPartial("scaling_group_name")
+		request.ScalingGroupName = d.Get("scaling_group_name").(string)
 	}
 
 	if d.HasChange("min_size") {
-		args.MinSize = requests.NewInteger(d.Get("min_size").(int))
-		d.SetPartial("min_size")
+		request.MinSize = requests.NewInteger(d.Get("min_size").(int))
 	}
 
 	if d.HasChange("max_size") {
-		args.MaxSize = requests.NewInteger(d.Get("max_size").(int))
-		d.SetPartial("max_size")
+		request.MaxSize = requests.NewInteger(d.Get("max_size").(int))
 	}
 
 	if d.HasChange("default_cooldown") {
-		args.DefaultCooldown = requests.NewInteger(d.Get("default_cooldown").(int))
-		d.SetPartial("default_cooldown")
+		request.DefaultCooldown = requests.NewInteger(d.Get("default_cooldown").(int))
 	}
 
 	if d.HasChange("removal_policies") {
 		policyies := d.Get("removal_policies").(*schema.Set).List()
-		s := reflect.ValueOf(args).Elem()
+		s := reflect.ValueOf(request).Elem()
 		for i, p := range policyies {
 			s.FieldByName(fmt.Sprintf("RemovalPolicy%d", i+1)).Set(reflect.ValueOf(p.(string)))
 		}
-		d.SetPartial("removal_policies")
 	}
 
-	if _, err := conn.ModifyScalingGroup(args); err != nil {
-		return err
+	raw, err := client.WithEssClient(func(essClient *ess.Client) (interface{}, error) {
+		return essClient.ModifyScalingGroup(request)
+	})
+	if err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
-
-	d.Partial(false)
-
+	addDebug(request.GetActionName(), raw)
 	return resourceAliyunEssScalingGroupRead(d, meta)
 }
 
 func resourceAliyunEssScalingGroupDelete(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*connectivity.AliyunClient)
+	essService := EssService{client}
 
-	return meta.(*AliyunClient).DeleteScalingGroupById(d.Id())
+	request := ess.CreateDeleteScalingGroupRequest()
+	request.ScalingGroupId = d.Id()
+	request.ForceDelete = requests.NewBoolean(true)
+
+	raw, err := client.WithEssClient(func(essClient *ess.Client) (interface{}, error) {
+		return essClient.DeleteScalingGroup(request)
+	})
+
+	if err != nil {
+		if IsExceptedErrors(err, []string{InvalidScalingGroupIdNotFound}) {
+			return nil
+		}
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
+	}
+	addDebug(request.GetActionName(), raw)
+
+	return WrapError(essService.WaitForEssScalingGroup(d.Id(), Deleted, DefaultTimeout))
 }
 
 func buildAlicloudEssScalingGroupArgs(d *schema.ResourceData, meta interface{}) (*ess.CreateScalingGroupRequest, error) {
-	client := meta.(*AliyunClient)
-	args := ess.CreateCreateScalingGroupRequest()
+	client := meta.(*connectivity.AliyunClient)
+	slbService := SlbService{client}
+	request := ess.CreateCreateScalingGroupRequest()
 
-	args.MinSize = requests.NewInteger(d.Get("min_size").(int))
-	args.MaxSize = requests.NewInteger(d.Get("max_size").(int))
-	args.DefaultCooldown = requests.NewInteger(d.Get("default_cooldown").(int))
+	request.MinSize = requests.NewInteger(d.Get("min_size").(int))
+	request.MaxSize = requests.NewInteger(d.Get("max_size").(int))
+	request.DefaultCooldown = requests.NewInteger(d.Get("default_cooldown").(int))
 
-	if v := d.Get("scaling_group_name").(string); v != "" {
-		args.ScalingGroupName = v
+	if v, ok := d.GetOk("scaling_group_name"); ok && v.(string) != "" {
+		request.ScalingGroupName = v.(string)
 	}
 
 	if v, ok := d.GetOk("vswitch_ids"); ok {
 		ids := expandStringList(v.(*schema.Set).List())
-		args.VSwitchIds = &ids
+		request.VSwitchIds = &ids
 	}
 
 	if dbs, ok := d.GetOk("db_instance_ids"); ok {
-		args.DBInstanceIds = convertListToJsonString(dbs.(*schema.Set).List())
+		request.DBInstanceIds = convertListToJsonString(dbs.(*schema.Set).List())
 	}
 
 	if lbs, ok := d.GetOk("loadbalancer_ids"); ok {
 		for _, lb := range lbs.(*schema.Set).List() {
-			if err := client.slbconn.WaitForLoadBalancerAsyn(lb.(string), slb.ActiveStatus, DefaultTimeout); err != nil {
-				return nil, fmt.Errorf("WaitForLoadbalancer %s %s got error: %#v", lb.(string), slb.ActiveStatus, err)
+			if err := slbService.WaitForSlb(lb.(string), Active, DefaultTimeout); err != nil {
+				return nil, WrapError(err)
 			}
 		}
-		args.LoadBalancerIds = convertListToJsonString(lbs.(*schema.Set).List())
+		request.LoadBalancerIds = convertListToJsonString(lbs.(*schema.Set).List())
 	}
 
-	return args, nil
+	if v, ok := d.GetOk("multi_az_policy"); ok && v.(string) != "" {
+		request.MultiAZPolicy = v.(string)
+	}
+
+	return request, nil
 }

@@ -1,13 +1,12 @@
 package alicloud
 
 import (
-	"fmt"
-	"strings"
-
 	"strconv"
+	"strings"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudSecurityGroupRules() *schema.Resource {
@@ -116,66 +115,67 @@ func dataSourceAlicloudSecurityGroupRules() *schema.Resource {
 }
 
 func dataSourceAlicloudSecurityGroupRulesRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ecsconn
+	client := meta.(*connectivity.AliyunClient)
 
 	req := ecs.CreateDescribeSecurityGroupAttributeRequest()
 	req.SecurityGroupId = d.Get("group_id").(string)
 	req.NicType = d.Get("nic_type").(string)
 	req.Direction = d.Get("direction").(string)
-	attr, err := conn.DescribeSecurityGroupAttribute(req)
+	raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+		return ecsClient.DescribeSecurityGroupAttribute(req)
+	})
 	if err != nil {
-		return fmt.Errorf("DescribeSecurityGroupAttribute got an error: %#v", err)
+		return WrapErrorf(err, DataDefaultErrorMsg, "security_group_rules", req.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
-
+	attr, _ := raw.(*ecs.DescribeSecurityGroupAttributeResponse)
 	var rules []map[string]interface{}
 
-	if attr == nil {
-		return fmt.Errorf("There is no any rule in the security group %s. Please change your search criteria and try again.", req.SecurityGroupId)
-	}
-	for _, item := range attr.Permissions.Permission {
-		if v, ok := d.GetOk("ip_protocol"); ok && strings.ToLower(string(item.IpProtocol)) != v.(string) {
-			continue
+	if attr != nil {
+		for _, item := range attr.Permissions.Permission {
+			if v, ok := d.GetOk("ip_protocol"); ok && strings.ToLower(string(item.IpProtocol)) != v.(string) {
+				continue
+			}
+
+			if v, ok := d.GetOk("policy"); ok && strings.ToLower(string(item.Policy)) != v.(string) {
+				continue
+			}
+
+			mapping := map[string]interface{}{
+				"ip_protocol":                strings.ToLower(string(item.IpProtocol)),
+				"port_range":                 item.PortRange,
+				"source_cidr_ip":             item.SourceCidrIp,
+				"source_group_id":            item.SourceGroupId,
+				"source_group_owner_account": item.SourceGroupOwnerAccount,
+				"dest_cidr_ip":               item.DestCidrIp,
+				"dest_group_id":              item.DestGroupId,
+				"dest_group_owner_account":   item.DestGroupOwnerAccount,
+				"policy":                     strings.ToLower(string(item.Policy)),
+				"nic_type":                   item.NicType,
+				"direction":                  item.Direction,
+				"description":                item.Description,
+			}
+
+			if pri, err := strconv.Atoi(item.Priority); err != nil {
+				return WrapError(err)
+			} else {
+				mapping["priority"] = pri
+			}
+			rules = append(rules, mapping)
 		}
 
-		if v, ok := d.GetOk("policy"); ok && strings.ToLower(string(item.Policy)) != v.(string) {
-			continue
+		if err := d.Set("group_name", attr.SecurityGroupName); err != nil {
+			return WrapError(err)
 		}
 
-		mapping := map[string]interface{}{
-			"ip_protocol":                strings.ToLower(string(item.IpProtocol)),
-			"port_range":                 item.PortRange,
-			"source_cidr_ip":             item.SourceCidrIp,
-			"source_group_id":            item.SourceGroupId,
-			"source_group_owner_account": item.SourceGroupOwnerAccount,
-			"dest_cidr_ip":               item.DestCidrIp,
-			"dest_group_id":              item.DestGroupId,
-			"dest_group_owner_account":   item.DestGroupOwnerAccount,
-			"policy":                     strings.ToLower(string(item.Policy)),
-			"nic_type":                   item.NicType,
-			"direction":                  item.Direction,
-			"description":                item.Description,
+		if err := d.Set("group_desc", attr.Description); err != nil {
+			return WrapError(err)
 		}
-
-		if pri, err := strconv.Atoi(item.Priority); err != nil {
-			return fmt.Errorf("Converting rule priority %s got an error: %#v.", item.Priority, err)
-		} else {
-			mapping["priority"] = pri
-		}
-		rules = append(rules, mapping)
 	}
 
-	d.SetId(attr.SecurityGroupId)
-
-	if err := d.Set("group_name", attr.SecurityGroupName); err != nil {
-		return err
-	}
-
-	if err := d.Set("group_desc", attr.Description); err != nil {
-		return err
-	}
+	d.SetId(d.Get("group_id").(string))
 
 	if err := d.Set("rules", rules); err != nil {
-		return err
+		return WrapError(err)
 	}
 
 	if output, ok := d.GetOk("output_file"); ok && output.(string) != "" {

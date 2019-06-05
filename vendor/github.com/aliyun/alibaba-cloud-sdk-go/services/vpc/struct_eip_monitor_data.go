@@ -19,8 +19,8 @@ package vpc
 type EipMonitorData struct {
 	EipRX        int    `json:"EipRX" xml:"EipRX"`
 	EipTX        int    `json:"EipTX" xml:"EipTX"`
-	EipPackets   int    `json:"EipPackets" xml:"EipPackets"`
-	EipBandwidth int    `json:"EipBandwidth" xml:"EipBandwidth"`
-	TimeStamp    string `json:"TimeStamp" xml:"TimeStamp"`
 	EipFlow      int    `json:"EipFlow" xml:"EipFlow"`
+	EipBandwidth int    `json:"EipBandwidth" xml:"EipBandwidth"`
+	EipPackets   int    `json:"EipPackets" xml:"EipPackets"`
+	TimeStamp    string `json:"TimeStamp" xml:"TimeStamp"`
 }

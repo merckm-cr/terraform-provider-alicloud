@@ -76,10 +76,10 @@ func (client *Client) DescribeCustomerGatewayWithCallback(request *DescribeCusto
 // DescribeCustomerGatewayRequest is the request struct for api DescribeCustomerGateway
 type DescribeCustomerGatewayRequest struct {
 	*requests.RpcRequest
+	ResourceOwnerId      requests.Integer `position:"Query" name:"ResourceOwnerId"`
+	ResourceOwnerAccount string           `position:"Query" name:"ResourceOwnerAccount"`
 	OwnerAccount         string           `position:"Query" name:"OwnerAccount"`
 	OwnerId              requests.Integer `position:"Query" name:"OwnerId"`
-	ResourceOwnerAccount string           `position:"Query" name:"ResourceOwnerAccount"`
-	ResourceOwnerId      requests.Integer `position:"Query" name:"ResourceOwnerId"`
 	CustomerGatewayId    string           `position:"Query" name:"CustomerGatewayId"`
 }
 
@@ -91,7 +91,7 @@ type DescribeCustomerGatewayResponse struct {
 	IpAddress         string `json:"IpAddress" xml:"IpAddress"`
 	Name              string `json:"Name" xml:"Name"`
 	Description       string `json:"Description" xml:"Description"`
-	CreateTime        int    `json:"CreateTime" xml:"CreateTime"`
+	CreateTime        int64  `json:"CreateTime" xml:"CreateTime"`
 }
 
 // CreateDescribeCustomerGatewayRequest creates a request to invoke DescribeCustomerGateway API

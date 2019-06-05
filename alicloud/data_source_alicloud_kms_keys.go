@@ -1,11 +1,12 @@
 package alicloud
 
 import (
-	"fmt"
 	"regexp"
 
-	"github.com/denverdino/aliyungo/kms"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/kms"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudKmsKeys() *schema.Resource {
@@ -13,7 +14,7 @@ func dataSourceAlicloudKmsKeys() *schema.Resource {
 		Read: dataSourceAlicloudKmsKeysRead,
 
 		Schema: map[string]*schema.Schema{
-			"ids": &schema.Schema{
+			"ids": {
 				Type:     schema.TypeList,
 				Optional: true,
 				ForceNew: true,
@@ -21,14 +22,14 @@ func dataSourceAlicloudKmsKeys() *schema.Resource {
 				MinItems: 1,
 			},
 
-			"description_regex": &schema.Schema{
+			"description_regex": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
 				ValidateFunc: validateNameRegex,
 			},
 
-			"status": &schema.Schema{
+			"status": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
@@ -41,7 +42,7 @@ func dataSourceAlicloudKmsKeys() *schema.Resource {
 			},
 
 			//Computed value
-			"keys": &schema.Schema{
+			"keys": {
 				Type:     schema.TypeList,
 				Computed: true,
 				Elem: &schema.Resource{
@@ -82,9 +83,9 @@ func dataSourceAlicloudKmsKeys() *schema.Resource {
 }
 
 func dataSourceAlicloudKmsKeysRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).kmsconn
+	client := meta.(*connectivity.AliyunClient)
 
-	args := &kms.ListKeysArgs{}
+	request := kms.CreateListKeysRequest()
 
 	idsMap := make(map[string]string)
 	if v, ok := d.GetOk("ids"); ok && len(v.([]interface{})) > 0 {
@@ -93,48 +94,60 @@ func dataSourceAlicloudKmsKeysRead(d *schema.ResourceData, meta interface{}) err
 		}
 	}
 
+	var s []map[string]interface{}
+	var ids []string
 	var keyIds []string
-	pagination := getPagination(1, 50)
+
+	request.PageSize = requests.NewInteger(PageSizeLarge)
+	request.PageNumber = requests.NewInteger(1)
 	for true {
-		args.Pagination = pagination
-		results, err := conn.ListKeys(args)
+		raw, err := client.WithKmsClient(func(kmsClient *kms.Client) (interface{}, error) {
+			return kmsClient.ListKeys(request)
+		})
 		if err != nil {
-			return fmt.Errorf("Error ListKeys: %#v", err)
+			return WrapErrorf(err, DataDefaultErrorMsg, "kms_keys", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
+		addDebug(request.GetActionName(), raw)
+		results, _ := raw.(*kms.ListKeysResponse)
 		for _, key := range results.Keys.Key {
-			if idsMap != nil {
+			if len(idsMap) > 0 {
 				if _, ok := idsMap[key.KeyId]; ok {
 					keyIds = append(keyIds, key.KeyId)
 					continue
 				}
+			} else {
+				keyIds = append(keyIds, key.KeyId)
+				continue
 			}
-			keyIds = append(keyIds, key.KeyId)
 		}
-		if len(results.Keys.Key) < pagination.PageSize {
+		if len(results.Keys.Key) < PageSizeLarge {
 			break
 		}
-		pagination.PageNumber += 1
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			request.PageNumber = page
+		}
 	}
 
-	if len(keyIds) < 1 {
-		return fmt.Errorf("Your query kms keys returned no results. Please change your search criteria and try again.")
-	}
-
-	var s []map[string]interface{}
-	var ids []string
 	descriptionRegex, ok := d.GetOk("description_regex")
 	var r *regexp.Regexp
 	if ok && descriptionRegex.(string) != "" {
 		r = regexp.MustCompile(descriptionRegex.(string))
 	}
 	status, statusOk := d.GetOk("status")
-
 	for _, k := range keyIds {
-		key, err := conn.DescribeKey(k)
-		if err != nil {
-			return fmt.Errorf("DescribeKey got an error: %#v", err)
-		}
 
+		request := kms.CreateDescribeKeyRequest()
+		request.KeyId = k
+		raw, err := client.WithKmsClient(func(kmsClient *kms.Client) (interface{}, error) {
+			return kmsClient.DescribeKey(request)
+		})
+		if err != nil {
+			return WrapErrorf(err, DataDefaultErrorMsg, k, request.GetActionName(), AlibabaCloudSdkGoERROR)
+		}
+		addDebug(request.GetActionName(), raw)
+		key, _ := raw.(*kms.DescribeKeyResponse)
 		if r != nil && !r.MatchString(key.KeyMetadata.Description) {
 			continue
 		}
@@ -150,13 +163,14 @@ func dataSourceAlicloudKmsKeysRead(d *schema.ResourceData, meta interface{}) err
 			"delete_date":   key.KeyMetadata.DeleteDate,
 			"creator":       key.KeyMetadata.Creator,
 		}
+
 		s = append(s, mapping)
 		ids = append(ids, key.KeyMetadata.KeyId)
 	}
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("keys", s); err != nil {
-		return err
+		return WrapError(err)
 	}
 
 	// create a json file in current directory and write data source to it.

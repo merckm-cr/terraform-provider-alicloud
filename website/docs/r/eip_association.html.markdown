@@ -10,17 +10,20 @@ description: |-
 
 Provides an Alicloud EIP Association resource for associating Elastic IP to ECS Instance, SLB Instance or Nat Gateway.
 
-~> **NOTE:** `alicloud_eip_association` is useful in scenarios where EIPs are either
+-> **NOTE:** `alicloud_eip_association` is useful in scenarios where EIPs are either
  pre-existing or distributed to customers or users and therefore cannot be changed.
 
-~> **NOTE:** From version 1.7.1, the resource support to associate EIP to SLB Instance or Nat Gateway.
+-> **NOTE:** From version 1.7.1, the resource support to associate EIP to SLB Instance or Nat Gateway.
 
-~> **NOTE:** One EIP can only be associated with ECS or SLB instance which in the VPC.
+-> **NOTE:** One EIP can only be associated with ECS or SLB instance which in the VPC.
 
 ## Example Usage
 
 ```
 # Create a new EIP association and use it to associate a EIP form a instance.
+
+data "alicloud_zones" "default" {
+}
 
 resource "alicloud_vpc" "vpc" {
   cidr_block = "10.1.0.0/21"
@@ -29,22 +32,30 @@ resource "alicloud_vpc" "vpc" {
 resource "alicloud_vswitch" "vsw" {
   vpc_id            = "${alicloud_vpc.vpc.id}"
   cidr_block        = "10.1.1.0/24"
-  availability_zone = "cn-beijing-a"
+  availability_zone = "${data.alicloud_zones.default.zones.0.id}"
 
   depends_on = [
     "alicloud_vpc.vpc",
   ]
 }
 
+data "alicloud_instance_types" "default" {
+  availability_zone = "${data.alicloud_zones.default.zones.0.id}"
+}
+
+data "alicloud_images" "default" {
+  name_regex = "^ubuntu_14.*_64"
+  most_recent = true
+  owners = "system"
+}
+
 resource "alicloud_instance" "ecs_instance" {
-  image_id              = "ubuntu_140405_64_40G_cloudinit_20161115.vhd"
-  instance_type         = "ecs.n4.small"
-  availability_zone     = "cn-beijing-a"
+  image_id              = "${data.alicloud_images.default.images.0.id}"
+  instance_type         = "${data.alicloud_instance_types.default.instance_types.0.id}"
+  availability_zone     = "${data.alicloud_zones.default.zones.0.id}"
   security_groups       = ["${alicloud_security_group.group.id}"]
   vswitch_id            = "${alicloud_vswitch.vsw.id}"
   instance_name         = "hello"
-  instance_network_type = "vpc"
-
   tags {
     Name = "TerraformTest-instance"
   }
@@ -68,8 +79,9 @@ resource "alicloud_security_group" "group" {
 
 The following arguments are supported:
 
-* `allocation_id` - (Optional, Forces new resource) The allocation EIP ID.
-* `instance_id` - (Optional, Forces new resource) The ID of the ECS or SLB instance or Nat Gateway.
+* `allocation_id` - (Required, ForcesNew) The allocation EIP ID.
+* `instance_id` - (Required, ForcesNew) The ID of the ECS or SLB instance or Nat Gateway.
+* `instance_type` - (Optional, ForceNew, Available in 1.46.0+) The type of cloud product that the eip instance to bind.
 
 ## Attributes Reference
 

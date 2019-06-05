@@ -1,6 +1,7 @@
 package alicloud
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/aliyun/fc-go-sdk"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudFCFunction() *schema.Resource {
@@ -22,12 +24,12 @@ func resourceAlicloudFCFunction() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"service": &schema.Schema{
+			"service": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"name": &schema.Schema{
+			"name": {
 				Type:          schema.TypeString,
 				Optional:      true,
 				Computed:      true,
@@ -35,7 +37,7 @@ func resourceAlicloudFCFunction() *schema.Resource {
 				ConflictsWith: []string{"name_prefix"},
 				ValidateFunc:  validateStringLengthInRange(1, 128),
 			},
-			"name_prefix": &schema.Schema{
+			"name_prefix": {
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
@@ -50,45 +52,49 @@ func resourceAlicloudFCFunction() *schema.Resource {
 				},
 			},
 
-			"oss_bucket": &schema.Schema{
+			"oss_bucket": {
 				Type:          schema.TypeString,
 				Optional:      true,
 				ConflictsWith: []string{"filename"},
 			},
 
-			"oss_key": &schema.Schema{
+			"oss_key": {
 				Type:          schema.TypeString,
 				Optional:      true,
 				ConflictsWith: []string{"filename"},
 			},
 
-			"filename": &schema.Schema{
+			"filename": {
 				Type:          schema.TypeString,
 				Optional:      true,
 				ConflictsWith: []string{"oss_bucket", "oss_key"},
 			},
 
-			"description": &schema.Schema{
+			"description": {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
 
-			"handler": &schema.Schema{
-				Type:     schema.TypeString,
+			"environment_variables": {
+				Type:     schema.TypeMap,
 				Optional: true,
-				Default:  true,
 			},
-			"memory_size": &schema.Schema{
+
+			"handler": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+			"memory_size": {
 				Type:         schema.TypeInt,
 				Optional:     true,
 				Default:      128,
 				ValidateFunc: validateIntegerInRange(128, 3072),
 			},
-			"runtime": &schema.Schema{
+			"runtime": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
-			"timeout": &schema.Schema{
+			"timeout": {
 				Type:     schema.TypeInt,
 				Optional: true,
 				Default:  3,
@@ -102,11 +108,7 @@ func resourceAlicloudFCFunction() *schema.Resource {
 }
 
 func resourceAlicloudFCFunctionCreate(d *schema.ResourceData, meta interface{}) error {
-	if err := requireAccountId(meta); err != nil {
-		return err
-	}
-	client := meta.(*AliyunClient)
-	conn := client.fcconn
+	client := meta.(*connectivity.AliyunClient)
 
 	serviceName := d.Get("service").(string)
 	var name string
@@ -129,31 +131,43 @@ func resourceAlicloudFCFunctionCreate(d *schema.ResourceData, meta interface{}) 
 		Timeout:      Int32Pointer(int32(d.Get("timeout").(int))),
 		MemorySize:   Int32Pointer(int32(d.Get("memory_size").(int))),
 	}
-	code, err := getFunctionCode(d)
+	if variables := d.Get("environment_variables").(map[string]interface{}); len(variables) > 0 {
+		byteVar, err := json.Marshal(variables)
+		if err != nil {
+			return WrapError(err)
+		}
+		err = json.Unmarshal(byteVar, &object.EnvironmentVariables)
+		if err != nil {
+			return WrapError(fmt.Errorf("EnvironmentVariables must be type of map[string]string, err is %s", err.Error()))
+		}
+	}
+	code, err := getFunctionCode(d, client)
 	if err != nil {
-		return err
+		return WrapError(err)
 	}
 	object.Code = code
 	input.FunctionCreateObject = object
 
 	var function *fc.CreateFunctionOutput
 	if err := resource.Retry(2*time.Minute, func() *resource.RetryError {
-		out, err := conn.CreateFunction(input)
+		raw, err := client.WithFcClient(func(fcClient *fc.Client) (interface{}, error) {
+			return fcClient.CreateFunction(input)
+		})
 		if err != nil {
 			if IsExceptedErrors(err, []string{AccessDenied}) {
-				return resource.RetryableError(fmt.Errorf("Error creating function compute service got an error: %#v", err))
+				return resource.RetryableError(WrapError(err))
 			}
-			return resource.NonRetryableError(fmt.Errorf("Error creating function compute service got an error: %#v", err))
+			return resource.NonRetryableError(WrapError(err))
 		}
-		function = out
+		function, _ = raw.(*fc.CreateFunctionOutput)
 		return nil
 
 	}); err != nil {
-		return err
+		return WrapErrorf(err, DefaultErrorMsg, "fc_function", "CreateFunction", AliyunLogGoSdkERROR)
 	}
 
 	if function == nil {
-		return fmt.Errorf("Creating function compute function got a empty response: %#v.", function)
+		return WrapError(Error("Creating function compute function got a empty response"))
 	}
 
 	d.SetId(fmt.Sprintf("%s%s%s", serviceName, COLON_SEPARATED, *function.FunctionName))
@@ -162,24 +176,21 @@ func resourceAlicloudFCFunctionCreate(d *schema.ResourceData, meta interface{}) 
 }
 
 func resourceAlicloudFCFunctionRead(d *schema.ResourceData, meta interface{}) error {
-	if err := requireAccountId(meta); err != nil {
-		return err
-	}
-
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	fcService := FcService{client}
 
 	split := strings.Split(d.Id(), COLON_SEPARATED)
 	if len(split) < 2 {
-		return fmt.Errorf("Invalid resource ID %s. Please check it and try again.", d.Id())
+		return WrapError(fmt.Errorf("Invalid resource ID %s. Please check it and try again.", d.Id()))
 	}
 
-	function, err := client.DescribeFcFunction(split[0], split[1])
+	function, err := fcService.DescribeFcFunction(split[0], split[1])
 	if err != nil {
 		if NotFoundError(err) {
 			d.SetId("")
 			return nil
 		}
-		return fmt.Errorf("DescribeFCFunction %s got an error: %#v", d.Id(), err)
+		return WrapError(err)
 	}
 
 	d.Set("service", split[0])
@@ -190,17 +201,14 @@ func resourceAlicloudFCFunctionRead(d *schema.ResourceData, meta interface{}) er
 	d.Set("runtime", function.Runtime)
 	d.Set("timeout", function.Timeout)
 	d.Set("last_modified", function.LastModifiedTime)
+	d.Set("environment_variables", function.EnvironmentVariables)
 
 	return nil
 }
 
 func resourceAlicloudFCFunctionUpdate(d *schema.ResourceData, meta interface{}) error {
-	if err := requireAccountId(meta); err != nil {
-		return err
-	}
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
 
-	d.Partial(true)
 	updateInput := &fc.UpdateFunctionInput{}
 	update := false
 
@@ -230,68 +238,82 @@ func resourceAlicloudFCFunctionUpdate(d *schema.ResourceData, meta interface{}) 
 		updateInput.Runtime = StringPointer(d.Get("runtime").(string))
 		d.SetPartial("runtime")
 	}
+	if d.HasChange("environment_variables") {
+		byteVar, err := json.Marshal(d.Get("environment_variables").(map[string]interface{}))
+		if err != nil {
+			return WrapError(err)
+		}
+		err = json.Unmarshal(byteVar, &updateInput.EnvironmentVariables)
+		if err != nil {
+			return WrapError(fmt.Errorf("EnvironmentVariables must be type of map[string]string, err is %s", err.Error()))
+		}
+		d.SetPartial("environment_variables")
+	}
 
 	if updateInput != nil || update {
 		split := strings.Split(d.Id(), COLON_SEPARATED)
 		updateInput.ServiceName = StringPointer(split[0])
 		updateInput.FunctionName = StringPointer(split[1])
-		code, err := getFunctionCode(d)
+		code, err := getFunctionCode(d, client)
 		if err != nil {
-			return err
+			return WrapError(err)
 		}
 		updateInput.Code = code
 
-		if _, err := client.fcconn.UpdateFunction(updateInput); err != nil {
-			return fmt.Errorf("UpdateFunction %s got an error: %#v.", d.Id(), err)
+		_, err = client.WithFcClient(func(fcClient *fc.Client) (interface{}, error) {
+			return fcClient.UpdateFunction(updateInput)
+		})
+		if err != nil {
+			return WrapErrorf(err, DefaultErrorMsg, d.Id(), "UpdateFunction", AliyunLogGoSdkERROR)
 		}
 	}
 
-	d.Partial(false)
 	return resourceAlicloudFCFunctionRead(d, meta)
 }
 
 func resourceAlicloudFCFunctionDelete(d *schema.ResourceData, meta interface{}) error {
-	if err := requireAccountId(meta); err != nil {
-		return err
-	}
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	fcService := FcService{client}
 	split := strings.Split(d.Id(), COLON_SEPARATED)
 
 	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		if _, err := client.fcconn.DeleteFunction(&fc.DeleteFunctionInput{
-			ServiceName:  StringPointer(split[0]),
-			FunctionName: StringPointer(split[1]),
-		}); err != nil {
+		_, err := client.WithFcClient(func(fcClient *fc.Client) (interface{}, error) {
+			return fcClient.DeleteFunction(&fc.DeleteFunctionInput{
+				ServiceName:  StringPointer(split[0]),
+				FunctionName: StringPointer(split[1]),
+			})
+		})
+		if err != nil {
 			if IsExceptedErrors(err, []string{ServiceNotFound, FunctionNotFound}) {
 				return nil
 			}
-			return resource.NonRetryableError(fmt.Errorf("Deleting function got an error: %#v.", err))
+			return resource.NonRetryableError(WrapErrorf(err, DefaultErrorMsg, d.Id(), "DeleteFunction", AliyunLogGoSdkERROR))
 		}
 
-		if _, err := client.DescribeFcFunction(split[0], split[1]); err != nil {
+		if _, err := fcService.DescribeFcFunction(split[0], split[1]); err != nil {
 			if NotFoundError(err) {
 				return nil
 			}
-			return resource.RetryableError(fmt.Errorf("While deleting function, getting function %s got an error: %#v.", d.Id(), err))
+			return resource.RetryableError(WrapErrorf(err, DefaultErrorMsg, d.Id(), "DeleteFunction", AliyunLogGoSdkERROR))
 		}
 		return nil
 	})
 
 }
 
-func getFunctionCode(d *schema.ResourceData) (*fc.Code, error) {
+func getFunctionCode(d *schema.ResourceData, client *connectivity.AliyunClient) (*fc.Code, error) {
 	code := fc.NewCode()
 	if filename, ok := d.GetOk("filename"); ok && filename.(string) != "" {
 		file, err := loadFileContent(filename.(string))
 		if err != nil {
-			return code, fmt.Errorf("Unable to load %q: %s", filename.(string), err)
+			return code, WrapError(fmt.Errorf("Unable to load %q: %s", filename.(string), err))
 		}
 		code.WithZipFile(file)
 	} else {
 		bucket, bucketOk := d.GetOk("oss_bucket")
 		key, keyOk := d.GetOk("oss_key")
 		if !bucketOk || !keyOk {
-			return code, fmt.Errorf("'oss_bucket' and 'oss_key' must all be set while using OSS code source.")
+			return code, WrapError(Error("'oss_bucket' and 'oss_key' must all be set while using OSS code source."))
 		}
 		code.WithOSSBucketName(bucket.(string)).WithOSSObjectName(key.(string))
 	}

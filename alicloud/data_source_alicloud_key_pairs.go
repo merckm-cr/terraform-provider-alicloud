@@ -1,13 +1,12 @@
 package alicloud
 
 import (
-	"fmt"
-	"log"
 	"regexp"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudKeyPairs() *schema.Resource {
@@ -15,14 +14,14 @@ func dataSourceAlicloudKeyPairs() *schema.Resource {
 		Read: dataSourceAlicloudKeyPairsRead,
 
 		Schema: map[string]*schema.Schema{
-			"name_regex": &schema.Schema{
+			"name_regex": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
 				ValidateFunc: validateNameRegex,
 			},
 
-			"finger_print": &schema.Schema{
+			"finger_print": {
 				Type:     schema.TypeBool,
 				Optional: true,
 				Computed: true,
@@ -31,9 +30,13 @@ func dataSourceAlicloudKeyPairs() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-
+			"names": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			//Computed value
-			"key_pairs": &schema.Schema{
+			"key_pairs": {
 				Type:     schema.TypeList,
 				Computed: true,
 				Elem: &schema.Resource{
@@ -63,59 +66,67 @@ func dataSourceAlicloudKeyPairs() *schema.Resource {
 }
 
 func dataSourceAlicloudKeyPairsRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ecsconn
+	client := meta.(*connectivity.AliyunClient)
 
 	var regex *regexp.Regexp
 	if name, ok := d.GetOk("name_regex"); ok {
 		regex = regexp.MustCompile(name.(string))
 	}
 
-	args := ecs.CreateDescribeKeyPairsRequest()
+	request := ecs.CreateDescribeKeyPairsRequest()
 	if fingerPrint, ok := d.GetOk("finger_print"); ok {
-		args.KeyPairFingerPrint = fingerPrint.(string)
+		request.KeyPairFingerPrint = fingerPrint.(string)
 	}
-	args.PageNumber = requests.NewInteger(1)
-	args.PageSize = requests.NewInteger(PageSizeLarge)
+	request.PageNumber = requests.NewInteger(1)
+	request.PageSize = requests.NewInteger(PageSizeLarge)
 	var keyPairs []ecs.KeyPair
 	keyPairsAttach := make(map[string][]map[string]interface{})
 
-	for true {
-		results, err := conn.DescribeKeyPairs(args)
+	for {
+		raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+			return ecsClient.DescribeKeyPairs(request)
+		})
 		if err != nil {
-			return fmt.Errorf("Error DescribekeyPairs: %#v", err)
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_key_pairs", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-		if results == nil || len(results.KeyPairs.KeyPair) < 1 {
+		addDebug(request, raw)
+		results, _ := raw.(*ecs.DescribeKeyPairsResponse)
+		if len(results.KeyPairs.KeyPair) < 1 {
 			break
 		}
 		for _, key := range results.KeyPairs.KeyPair {
 			if regex == nil || (regex != nil && regex.MatchString(key.KeyPairName)) {
 				keyPairs = append(keyPairs, key)
-				keyPairsAttach[key.KeyPairName] = make([]map[string]interface{}, 1)
+				keyPairsAttach[key.KeyPairName] = make([]map[string]interface{}, 0)
 			}
 		}
 		if len(results.KeyPairs.KeyPair) < PageSizeLarge {
 			break
 		}
-		args.PageNumber = args.PageNumber + requests.NewInteger(1)
-	}
-
-	if len(keyPairs) < 1 {
-		return fmt.Errorf("Your query key pairs returned no results. Please change your search criteria and try again.")
-	}
-
-	req := ecs.CreateDescribeInstancesRequest()
-	req.PageNumber = requests.NewInteger(1)
-	req.PageSize = requests.NewInteger(PageSizeLarge)
-
-	for true {
-		resp, err := conn.DescribeInstances(req)
-		if err != nil {
-			return fmt.Errorf("Error DescribeInstances: %#v", err)
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			request.PageNumber = page
 		}
-		if resp == nil || len(resp.Instances.Instance) < 1 {
+	}
+
+	describeInstancesRequest := ecs.CreateDescribeInstancesRequest()
+	describeInstancesRequest.PageNumber = requests.NewInteger(1)
+	describeInstancesRequest.PageSize = requests.NewInteger(PageSizeLarge)
+
+	for {
+		raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+			return ecsClient.DescribeInstances(describeInstancesRequest)
+		})
+		if err != nil {
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_key_pairs", request.GetActionName(), AlibabaCloudSdkGoERROR)
+		}
+		addDebug(describeInstancesRequest.GetActionName(), raw)
+		object, _ := raw.(*ecs.DescribeInstancesResponse)
+		if object == nil || len(object.Instances.Instance) < 1 {
 			break
 		}
-		for _, inst := range resp.Instances.Instance {
+		for _, inst := range object.Instances.Instance {
 			if _, ok := keyPairsAttach[inst.KeyPairName]; ok {
 				public_ip := inst.EipAddress.IpAddress
 				if public_ip == "" && len(inst.PublicIpAddress.IpAddress) > 0 {
@@ -143,10 +154,15 @@ func dataSourceAlicloudKeyPairsRead(d *schema.ResourceData, meta interface{}) er
 				}
 			}
 		}
-		if len(resp.Instances.Instance) < PageSizeLarge {
+		if len(object.Instances.Instance) < PageSizeLarge {
 			break
 		}
-		req.PageNumber = req.PageNumber + requests.NewInteger(1)
+
+		if page, err := getNextpageNumber(describeInstancesRequest.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			describeInstancesRequest.PageNumber = page
+		}
 	}
 
 	return keyPairsDescriptionAttributes(d, keyPairs, keyPairsAttach)
@@ -163,16 +179,18 @@ func keyPairsDescriptionAttributes(d *schema.ResourceData, keyPairs []ecs.KeyPai
 			"instances":    keyPairsAttach[key.KeyPairName],
 		}
 
-		log.Printf("[DEBUG] alicloud_key_pairs - adding keypair mapping: %v", mapping)
 		names = append(names, string(key.KeyPairName))
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(names))
 	if err := d.Set("key_pairs", s); err != nil {
-		return err
+		return WrapError(err)
 	}
 
+	if err := d.Set("names", names); err != nil {
+		return WrapError(err)
+	}
 	// create a json file in current directory and write data source to it.
 	if output, ok := d.GetOk("output_file"); ok && output.(string) != "" {
 		writeToFile(output.(string), s)

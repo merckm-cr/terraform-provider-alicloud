@@ -7,22 +7,21 @@ import (
 )
 
 func TestAccAlicloudSlbServerGroup_import(t *testing.T) {
-	resourceName := "alicloud_slb_server_group.group"
+	resourceName := "alicloud_slb_server_group.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSlbServerGroupDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccSlbServerGroupClassic,
+			{
+				Config: testAccSlbServerGroupVpc,
 			},
 
-			resource.TestStep{
-				ResourceName:            resourceName,
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"load_balancer_id"},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
 			},
 		},
 	})

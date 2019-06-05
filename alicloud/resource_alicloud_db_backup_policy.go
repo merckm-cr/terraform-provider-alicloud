@@ -6,8 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/rds"
+
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudDBBackupPolicy() *schema.Resource {
@@ -21,13 +24,13 @@ func resourceAlicloudDBBackupPolicy() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"instance_id": &schema.Schema{
+			"instance_id": {
 				Type:     schema.TypeString,
 				ForceNew: true,
 				Required: true,
 			},
 
-			"backup_period": &schema.Schema{
+			"backup_period": {
 				Type: schema.TypeSet,
 				Elem: &schema.Schema{Type: schema.TypeString},
 				// terraform does not support ValidateFunc of TypeList attr
@@ -36,31 +39,31 @@ func resourceAlicloudDBBackupPolicy() *schema.Resource {
 				Computed: true,
 			},
 
-			"backup_time": &schema.Schema{
+			"backup_time": {
 				Type:         schema.TypeString,
 				ValidateFunc: validateAllowedStringValue(BACKUP_TIME),
 				Optional:     true,
 				Default:      "02:00Z-03:00Z",
 			},
 
-			"retention_period": &schema.Schema{
+			"retention_period": {
 				Type:         schema.TypeInt,
 				ValidateFunc: validateIntegerInRange(7, 730),
 				Optional:     true,
 				Default:      7,
 			},
 
-			"log_backup": &schema.Schema{
+			"log_backup": {
 				Type:     schema.TypeBool,
 				Optional: true,
-				Default:  true,
+				Computed: true,
 			},
 
-			"log_retention_period": &schema.Schema{
+			"log_retention_period": {
 				Type:             schema.TypeInt,
 				ValidateFunc:     validateIntegerInRange(7, 730),
 				Optional:         true,
-				Default:          7,
+				Computed:         true,
 				DiffSuppressFunc: logRetentionPeriodDiffSuppressFunc,
 			},
 		},
@@ -75,52 +78,58 @@ func resourceAlicloudDBBackupPolicyCreate(d *schema.ResourceData, meta interface
 }
 
 func resourceAlicloudDBBackupPolicyRead(d *schema.ResourceData, meta interface{}) error {
-
-	resp, err := meta.(*AliyunClient).DescribeBackupPolicy(d.Id())
+	client := meta.(*connectivity.AliyunClient)
+	rdsService := RdsService{client}
+	object, err := rdsService.DescribeBackupPolicy(d.Id())
 	if err != nil {
-		if NotFoundDBInstance(err) {
+		if rdsService.NotFoundDBInstance(err) {
 			d.SetId("")
 			return nil
 		}
-		return fmt.Errorf("Error Describe DB backup policy: %#v", err)
+		return WrapError(err)
 	}
 
 	d.Set("instance_id", d.Id())
-	d.Set("backup_time", resp.PreferredBackupTime)
-	d.Set("backup_period", strings.Split(resp.PreferredBackupPeriod, ","))
-	d.Set("retention_period", resp.BackupRetentionPeriod)
-	d.Set("log_backup", resp.BackupLog == "Enable")
-	d.Set("log_retention_period", resp.LogBackupRetentionPeriod)
+	d.Set("backup_time", object.PreferredBackupTime)
+	d.Set("backup_period", strings.Split(object.PreferredBackupPeriod, ","))
+	d.Set("retention_period", object.BackupRetentionPeriod)
+	d.Set("log_backup", object.BackupLog == "Enable")
+	d.Set("log_retention_period", object.LogBackupRetentionPeriod)
 
 	return nil
 }
 
 func resourceAlicloudDBBackupPolicyUpdate(d *schema.ResourceData, meta interface{}) error {
 
-	d.Partial(true)
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	rdsService := RdsService{client}
 	update := false
 
 	periodList := expandStringList(d.Get("backup_period").(*schema.Set).List())
 	backupPeriod := fmt.Sprintf("%s", strings.Join(periodList[:], COMMA_SEPARATED))
 	backupTime := d.Get("backup_time").(string)
-	retentionPeriod := strconv.Itoa(d.Get("retention_period").(int))
 	backupLog := "Enable"
-	logBackupRetentionPeriod := strconv.Itoa(d.Get("log_retention_period").(int))
+
+	retentionPeriod := ""
+	if temp, ok := d.GetOk("retention_period"); ok {
+		retentionPeriod = strconv.Itoa(temp.(int))
+	}
+
+	logBackupRetentionPeriod := ""
+	if temp, ok := d.GetOk("log_retention_period"); ok {
+		logBackupRetentionPeriod = strconv.Itoa(temp.(int))
+	}
 
 	if d.HasChange("backup_period") {
 		update = true
-		d.SetPartial("backup_period")
 	}
 
 	if d.HasChange("backup_time") {
 		update = true
-		d.SetPartial("backup_time")
 	}
 
 	if d.HasChange("retention_period") {
 		update = true
-		d.SetPartial("retention_period")
 	}
 
 	if d.HasChange("log_backup") {
@@ -128,7 +137,6 @@ func resourceAlicloudDBBackupPolicyUpdate(d *schema.ResourceData, meta interface
 			backupLog = "Disabled"
 		}
 		update = true
-		d.SetPartial("retention_period")
 	}
 
 	if d.HasChange("log_retention_period") {
@@ -136,45 +144,47 @@ func resourceAlicloudDBBackupPolicyUpdate(d *schema.ResourceData, meta interface
 			logBackupRetentionPeriod = retentionPeriod
 		}
 		update = true
-		d.SetPartial("log_retention_period")
 	}
 
 	if update {
 		// wait instance running before modifying
-		if err := client.WaitForDBInstance(d.Id(), Running, 500); err != nil {
-			return fmt.Errorf("WaitForInstance %s got error: %#v", Running, err)
+		if err := rdsService.WaitForDBInstance(d.Id(), Running, DefaultTimeoutMedium); err != nil {
+			return WrapError(err)
 		}
 		if err := resource.Retry(5*time.Minute, func() *resource.RetryError {
-			if err := client.ModifyDBBackupPolicy(d.Id(), backupTime, backupPeriod, retentionPeriod, backupLog, logBackupRetentionPeriod); err != nil {
+			if err := rdsService.ModifyDBBackupPolicy(d.Id(), backupTime, backupPeriod, retentionPeriod, backupLog, logBackupRetentionPeriod); err != nil {
 				if IsExceptedErrors(err, OperationDeniedDBStatus) {
-					return resource.RetryableError(fmt.Errorf("ModifyBackupPolicy got an error: %#v.", err))
+					return resource.RetryableError(err)
 				}
-				return resource.NonRetryableError(fmt.Errorf("ModifyBackupPolicy got an error: %#v.", err))
+				return resource.NonRetryableError(err)
 			}
-
 			return nil
 		}); err != nil {
-			return err
+			return WrapError(err)
 		}
 	}
 
-	d.Partial(false)
 	return resourceAlicloudDBBackupPolicyRead(d, meta)
 }
 
 func resourceAlicloudDBBackupPolicyDelete(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*connectivity.AliyunClient)
+	rdsService := RdsService{client}
+	request := rds.CreateModifyBackupPolicyRequest()
+	request.DBInstanceId = d.Id()
+	request.PreferredBackupPeriod = "Tuesday,Thursday,Saturday"
+	request.BackupRetentionPeriod = "7"
+	request.PreferredBackupTime = "02:00Z-03:00Z"
+	request.BackupLog = "Enable"
+	request.LogBackupRetentionPeriod = "7"
 
-	backupTime := "02:00Z-03:00Z"
-	backupPeriod := "Tuesday,Thursday,Saturday"
-	retentionPeriod := "7"
-	backupLog := "Enable"
-	logBackupRetentionPeriod := "7"
-
-	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		if err := meta.(*AliyunClient).ModifyDBBackupPolicy(d.Id(), backupTime, backupPeriod, retentionPeriod, backupLog, logBackupRetentionPeriod); err != nil {
-			return resource.RetryableError(fmt.Errorf("ModifyBackupPolicy got an error: %#v", err))
-		}
-
-		return nil
+	raw, err := client.WithRdsClient(func(rdsClient *rds.Client) (interface{}, error) {
+		return rdsClient.ModifyBackupPolicy(request)
 	})
+	if err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
+	}
+	addDebug(request.GetActionName(), raw)
+
+	return rdsService.WaitForDBInstance(d.Id(), Running, DefaultTimeoutMedium)
 }

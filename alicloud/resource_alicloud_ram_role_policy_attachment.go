@@ -1,12 +1,11 @@
 package alicloud
 
 import (
-	"fmt"
-	"time"
+	"strings"
 
-	"github.com/denverdino/aliyungo/ram"
-	"github.com/hashicorp/terraform/helper/resource"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudRamRolePolicyAttachment() *schema.Resource {
@@ -17,19 +16,17 @@ func resourceAlicloudRamRolePolicyAttachment() *schema.Resource {
 		Delete: resourceAlicloudRamRolePolicyAttachmentDelete,
 
 		Schema: map[string]*schema.Schema{
-			"role_name": &schema.Schema{
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     true,
-				ValidateFunc: validateRamName,
+			"role_name": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
 			},
-			"policy_name": &schema.Schema{
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     true,
-				ValidateFunc: validateRamPolicyName,
+			"policy_name": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
 			},
-			"policy_type": &schema.Schema{
+			"policy_type": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
@@ -40,80 +37,80 @@ func resourceAlicloudRamRolePolicyAttachment() *schema.Resource {
 }
 
 func resourceAlicloudRamRolePolicyAttachmentCreate(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ramconn
-	args := ram.AttachPolicyToRoleRequest{
-		PolicyRequest: ram.PolicyRequest{
-			PolicyName: d.Get("policy_name").(string),
-			PolicyType: ram.Type(d.Get("policy_type").(string)),
-		},
-		RoleName: d.Get("role_name").(string),
-	}
+	client := meta.(*connectivity.AliyunClient)
+	request := ram.CreateAttachPolicyToRoleRequest()
+	request.RoleName = d.Get("role_name").(string)
+	request.PolicyType = d.Get("policy_type").(string)
+	request.PolicyName = d.Get("policy_name").(string)
 
-	if _, err := conn.AttachPolicyToRole(args); err != nil {
-		return fmt.Errorf("AttachPolicyToRole got an error: %#v", err)
+	raw, err := client.WithRamClient(func(ramClient *ram.Client) (interface{}, error) {
+		return ramClient.AttachPolicyToRole(request)
+	})
+	if err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, "alicloud_ram_role_policy_attachment", request.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
-	d.SetId("role" + args.PolicyName + string(args.PolicyType) + args.RoleName)
+	addDebug(request.GetActionName(), raw)
+
+	// In order to be compatible with previous Id (before 1.9.6) which format to role:<policy_name>:<policy_type>:<role_name>
+	d.SetId(strings.Join([]string{"role", request.PolicyName, request.PolicyType, request.RoleName}, COLON_SEPARATED))
 
 	return resourceAlicloudRamRolePolicyAttachmentRead(d, meta)
 }
 
 func resourceAlicloudRamRolePolicyAttachmentRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ramconn
-
-	args := ram.RoleQueryRequest{
-		RoleName: d.Get("role_name").(string),
+	client := meta.(*connectivity.AliyunClient)
+	ramService := RamService{client}
+	id := strings.Join([]string{"role", d.Get("policy_name").(string), d.Get("policy_type").(string), d.Get("role_name").(string)}, COLON_SEPARATED)
+	if d.Id() != id {
+		d.SetId(id)
 	}
-
-	response, err := conn.ListPoliciesForRole(args)
+	object, err := ramService.DescribeRamRolePolicyAttachment(d.Id())
 	if err != nil {
-		return fmt.Errorf("Get list policies for role got an error: %v", err)
-	}
-
-	if len(response.Policies.Policy) > 0 {
-		for _, v := range response.Policies.Policy {
-			if v.PolicyName == d.Get("policy_name").(string) && v.PolicyType == d.Get("policy_type").(string) {
-				d.Set("role_name", args.RoleName)
-				d.Set("policy_name", v.PolicyName)
-				d.Set("policy_type", v.PolicyType)
-				return nil
-			}
+		if NotFoundError(err) {
+			d.SetId("")
+			return nil
 		}
+		return WrapError(err)
 	}
-
-	d.SetId("")
+	parts, err := ParseResourceId(id, 4)
+	if err != nil {
+		return WrapError(err)
+	}
+	d.Set("role_name", parts[3])
+	d.Set("policy_name", object.PolicyName)
+	d.Set("policy_type", object.PolicyType)
 	return nil
 }
 
 func resourceAlicloudRamRolePolicyAttachmentDelete(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ramconn
+	client := meta.(*connectivity.AliyunClient)
+	ramService := RamService{client}
+	id := strings.Join([]string{"role", d.Get("policy_name").(string), d.Get("policy_type").(string), d.Get("role_name").(string)}, COLON_SEPARATED)
 
-	args := ram.AttachPolicyToRoleRequest{
-		PolicyRequest: ram.PolicyRequest{
-			PolicyName: d.Get("policy_name").(string),
-			PolicyType: ram.Type(d.Get("policy_type").(string)),
-		},
-		RoleName: d.Get("role_name").(string),
+	if d.Id() != id {
+		d.SetId(id)
 	}
 
-	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		if _, err := conn.DetachPolicyFromRole(args); err != nil {
-			if RamEntityNotExist(err) {
-				return nil
-			}
-			return resource.NonRetryableError(fmt.Errorf("Error deleting role policy attachment: %#v", err))
-		}
+	parts, err := ParseResourceId(id, 4)
+	if err != nil {
+		return WrapError(err)
+	}
+	request := ram.CreateDetachPolicyFromRoleRequest()
+	request.PolicyName = parts[1]
+	request.PolicyType = parts[2]
+	request.RoleName = parts[3]
 
-		response, err := conn.ListPoliciesForRole(ram.RoleQueryRequest{RoleName: args.RoleName})
-		if err != nil {
-			if RamEntityNotExist(err) {
-				return nil
-			}
-			return resource.NonRetryableError(err)
-		}
-
-		if len(response.Policies.Policy) < 1 {
+	raw, err := client.WithRamClient(func(ramClient *ram.Client) (interface{}, error) {
+		return ramClient.DetachPolicyFromRole(request)
+	})
+	if err != nil {
+		if RamEntityNotExist(err) {
 			return nil
 		}
-		return resource.RetryableError(fmt.Errorf("Error deleting role policy attachment - trying again while it is deleted."))
-	})
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
+	}
+
+	addDebug(request.GetActionName(), raw)
+
+	return WrapError(ramService.WaitForRamRolePolicyAttachment(d.Id(), Deleted, DefaultTimeout))
 }

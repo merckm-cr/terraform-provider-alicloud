@@ -1,12 +1,12 @@
 package alicloud
 
 import (
-	"fmt"
-	"log"
-	"regexp"
-
-	"github.com/denverdino/aliyungo/dns"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/alidns"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
+
+	"regexp"
 )
 
 func dataSourceAlicloudDnsDomains() *schema.Resource {
@@ -43,7 +43,16 @@ func dataSourceAlicloudDnsDomains() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-
+			"ids": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"names": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			// Computed values
 			"domains": {
 				Type:     schema.TypeList,
@@ -96,27 +105,37 @@ func dataSourceAlicloudDnsDomains() *schema.Resource {
 	}
 }
 func dataSourceAlicloudDnsDomainsRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).dnsconn
+	client := meta.(*connectivity.AliyunClient)
+	request := alidns.CreateDescribeDomainsRequest()
 
-	args := &dns.DescribeDomainsArgs{}
-
-	var allDomains []dns.DomainType
-	pagination := getPagination(1, 50)
+	var allDomains []alidns.Domain
+	request.PageSize = requests.NewInteger(PageSizeLarge)
+	request.PageNumber = requests.NewInteger(1)
 	for {
-		args.Pagination = pagination
-		domains, err := conn.DescribeDomains(args)
+		raw, err := client.WithDnsClient(func(dnsClient *alidns.Client) (interface{}, error) {
+			return dnsClient.DescribeDomains(request)
+		})
 		if err != nil {
-			return err
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_dns_domains", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-		allDomains = append(allDomains, domains...)
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*alidns.DescribeDomainsResponse)
+		domains := response.Domains.Domain
+		for _, domain := range domains {
+			allDomains = append(allDomains, domain)
+		}
 
-		if len(domains) < pagination.PageSize {
+		if len(domains) < PageSizeLarge {
 			break
 		}
-		pagination.PageNumber += 1
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			request.PageNumber = page
+		}
 	}
 
-	var filteredDomains []dns.DomainType
+	var filteredDomains []alidns.Domain
 
 	for _, domain := range allDomains {
 		if v, ok := d.GetOk("ali_domain"); ok && domain.AliDomain != v.(bool) {
@@ -148,17 +167,12 @@ func dataSourceAlicloudDnsDomainsRead(d *schema.ResourceData, meta interface{}) 
 		filteredDomains = append(filteredDomains, domain)
 	}
 
-	if len(filteredDomains) < 1 {
-		return fmt.Errorf("Your query returned no results. Please change your search criteria and try again.")
-	}
-
-	log.Printf("[DEBUG] alicloud_dns_domains - Domains found: %#v", allDomains)
-
 	return domainsDecriptionAttributes(d, filteredDomains, meta)
 }
 
-func domainsDecriptionAttributes(d *schema.ResourceData, domainTypes []dns.DomainType, meta interface{}) error {
+func domainsDecriptionAttributes(d *schema.ResourceData, domainTypes []alidns.Domain, meta interface{}) error {
 	var ids []string
+	var names []string
 	var s []map[string]interface{}
 	for _, domain := range domainTypes {
 		mapping := map[string]interface{}{
@@ -172,14 +186,20 @@ func domainsDecriptionAttributes(d *schema.ResourceData, domainTypes []dns.Domai
 			"puny_code":    domain.PunyCode,
 			"dns_servers":  domain.DnsServers.DnsServer,
 		}
-		log.Printf("[DEBUG] alicloud_dns_domains - adding domain: %v", mapping)
+		names = append(names, domain.DomainName)
 		ids = append(ids, domain.DomainId)
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("domains", s); err != nil {
-		return err
+		return WrapError(err)
+	}
+	if err := d.Set("names", names); err != nil {
+		return WrapError(err)
+	}
+	if err := d.Set("ids", ids); err != nil {
+		return WrapError(err)
 	}
 
 	// create a json file in current directory and write data source to it.

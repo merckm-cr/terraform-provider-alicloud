@@ -5,9 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aliyun/aliyun-log-go-sdk"
+	sls "github.com/aliyun/aliyun-log-go-sdk"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func TestAccAlicloudLogStoreIndex_fullText(t *testing.T) {
@@ -21,14 +23,14 @@ func TestAccAlicloudLogStoreIndex_fullText(t *testing.T) {
 		CheckDestroy: testAccCheckAlicloudLogStoreIndexDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: testAlicloudLogStoreIndexFullText,
+				Config: testAlicloudLogStoreIndexFullText(acctest.RandInt()),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAlicloudLogProjectExists("alicloud_log_project.foo", &project),
 					testAccCheckAlicloudLogStoreExists("alicloud_log_store.foo", &store),
 					testAccCheckAlicloudLogStoreIndexExists("alicloud_log_store_index.foo", &index),
 					resource.TestCheckResourceAttr("alicloud_log_store_index.foo", "full_text.#", "1"),
 					resource.TestCheckResourceAttr("alicloud_log_store_index.foo", "full_text.1.case_sensitive", "true"),
-					resource.TestCheckResourceAttr("alicloud_log_store_index.foo", "full_text.1.token", " #$%^*\r\n\t"),
+					resource.TestCheckResourceAttr("alicloud_log_store_index.foo", "full_text.1.token", " #$^*\r\n\t"),
 				),
 			},
 		},
@@ -46,7 +48,7 @@ func TestAccAlicloudLogStoreIndex_field(t *testing.T) {
 		CheckDestroy: testAccCheckAlicloudLogStoreIndexDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: testAlicloudLogStoreIndexField,
+				Config: testAlicloudLogStoreIndexField(acctest.RandInt()),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAlicloudLogProjectExists("alicloud_log_project.bar", &project),
 					testAccCheckAlicloudLogStoreExists("alicloud_log_store.bar", &store),
@@ -69,7 +71,7 @@ func TestAccAlicloudLogStoreIndex_all(t *testing.T) {
 		CheckDestroy: testAccCheckAlicloudLogStoreIndexDestroy,
 		Steps: []resource.TestStep{
 			{
-				Config: testAlicloudLogStoreIndexAll,
+				Config: testAlicloudLogStoreIndexAll(acctest.RandInt()),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAlicloudLogProjectExists("alicloud_log_project.all", &project),
 					testAccCheckAlicloudLogStoreExists("alicloud_log_store.all", &store),
@@ -96,7 +98,9 @@ func testAccCheckAlicloudLogStoreIndexExists(name string, index *sls.Index) reso
 
 		split := strings.Split(rs.Primary.ID, COLON_SEPARATED)
 
-		i, err := testAccProvider.Meta().(*AliyunClient).DescribeLogStoreIndex(split[0], split[1])
+		client := testAccProvider.Meta().(*connectivity.AliyunClient)
+		logService := LogService{client}
+		i, err := logService.DescribeLogStoreIndex(split[0], split[1])
 		if err != nil {
 			return err
 		}
@@ -107,7 +111,8 @@ func testAccCheckAlicloudLogStoreIndexExists(name string, index *sls.Index) reso
 }
 
 func testAccCheckAlicloudLogStoreIndexDestroy(s *terraform.State) error {
-	client := testAccProvider.Meta().(*AliyunClient)
+	client := testAccProvider.Meta().(*connectivity.AliyunClient)
+	logService := LogService{client}
 
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "alicloud_log_store_index" {
@@ -116,7 +121,7 @@ func testAccCheckAlicloudLogStoreIndexDestroy(s *terraform.State) error {
 
 		split := strings.Split(rs.Primary.ID, COLON_SEPARATED)
 
-		i, err := client.DescribeLogStoreIndex(split[0], split[1])
+		i, err := logService.DescribeLogStoreIndex(split[0], split[1])
 		if err != nil {
 			if NotFoundError(err) {
 				continue
@@ -140,88 +145,94 @@ func testAccCheckAlicloudLogStoreIndexDestroy(s *terraform.State) error {
 	return nil
 }
 
-const testAlicloudLogStoreIndexFullText = `
-variable "name" {
-    default = "tf-test-log-store-index-full"
+func testAlicloudLogStoreIndexFullText(rand int) string {
+	return fmt.Sprintf(`
+	variable "name" {
+	    default = "tf-testacclogstoreindexfull-%d"
+	}
+	resource "alicloud_log_project" "foo" {
+	    name = "${var.name}"
+	    description = "tf unit test"
+	}
+	resource "alicloud_log_store" "foo" {
+	    project = "${alicloud_log_project.foo.name}"
+	    name = "${var.name}"
+	    retention_period = "3000"
+	    shard_count = 1
+	}
+	resource "alicloud_log_store_index" "foo" {
+	    project = "${alicloud_log_project.foo.name}"
+	    logstore = "${alicloud_log_store.foo.name}"
+	    full_text {
+		case_sensitive = true
+		token = " #$^*\r\n\t"
+	    }
+	}
+	`, rand)
 }
-resource "alicloud_log_project" "foo" {
-    name = "${var.name}"
-    description = "tf unit test"
-}
-resource "alicloud_log_store" "foo" {
-    project = "${alicloud_log_project.foo.name}"
-    name = "${var.name}"
-    retention_period = "3000"
-    shard_count = 1
-}
-resource "alicloud_log_store_index" "foo" {
-    project = "${alicloud_log_project.foo.name}"
-    logstore = "${alicloud_log_store.foo.name}"
-    full_text {
-	case_sensitive = true
-	token = " #$%^*\r\n\t"
-    }
-}
-`
-const testAlicloudLogStoreIndexField = `
-variable "name" {
-    default = "tf-test-log-store-index-field"
-}
-resource "alicloud_log_project" "bar" {
-    name = "${var.name}"
-    description = "tf unit test"
-}
-resource "alicloud_log_store" "bar" {
-    project = "${alicloud_log_project.bar.name}"
-    name = "${var.name}"
-    retention_period = "3000"
-    shard_count = 1
-}
-resource "alicloud_log_store_index" "bar" {
-    project = "${alicloud_log_project.bar.name}"
-    logstore = "${alicloud_log_store.bar.name}"
-    field_search {
-      name = "${var.name}"
-      enable_analytics = true
-      token = " #$%^*\r\n\t"
-      name = "${var.name}-1"
-      type = "text"
-    }
-}
-`
-
-const testAlicloudLogStoreIndexAll = `
-variable "name" {
-    default = "tf-log-store-index-all"
-}
-resource "alicloud_log_project" "all" {
-    name = "${var.name}"
-    description = "tf unit test"
-}
-resource "alicloud_log_store" "all" {
-    project = "${alicloud_log_project.all.name}"
-    name = "${var.name}"
-    retention_period = "3000"
-    shard_count = 1
+func testAlicloudLogStoreIndexField(rand int) string {
+	return fmt.Sprintf(`
+	variable "name" {
+	    default = "tf-testacclogstoreindexfield-%d"
+	}
+	resource "alicloud_log_project" "bar" {
+	    name = "${var.name}"
+	    description = "tf unit test"
+	}
+	resource "alicloud_log_store" "bar" {
+	    project = "${alicloud_log_project.bar.name}"
+	    name = "${var.name}"
+	    retention_period = "3000"
+	    shard_count = 1
+	}
+	resource "alicloud_log_store_index" "bar" {
+	    project = "${alicloud_log_project.bar.name}"
+	    logstore = "${alicloud_log_store.bar.name}"
+	    field_search {
+	      name = "${var.name}"
+	      enable_analytics = true
+	      token = " #$^*\r\n\t"
+	      name = "${var.name}-1"
+	      type = "text"
+	    }
+	}
+	`, rand)
 }
 
-resource "alicloud_log_store_index" "all" {
-    project = "${alicloud_log_project.all.name}"
-    logstore = "${alicloud_log_store.all.name}"
-    full_text {
-	case_sensitive = true
-	token = " #$%^*\r\n\t"
-    }
-    field_search = [
-    {
-	name = "${var.name}-1"
-	enable_analytics = true
-    },
-    {
-	token = " #$%^*\r\n\t"
-	name = "${var.name}-2"
-	type = "text"
-    }
-    ]
+func testAlicloudLogStoreIndexAll(rand int) string {
+	return fmt.Sprintf(`
+	variable "name" {
+	    default = "tf-testacclogstoreindexall-%d"
+	}
+	resource "alicloud_log_project" "all" {
+	    name = "${var.name}"
+	    description = "tf unit test"
+	}
+	resource "alicloud_log_store" "all" {
+	    project = "${alicloud_log_project.all.name}"
+	    name = "${var.name}"
+	    retention_period = "3000"
+	    shard_count = 1
+	}
+
+	resource "alicloud_log_store_index" "all" {
+	    project = "${alicloud_log_project.all.name}"
+	    logstore = "${alicloud_log_store.all.name}"
+	    full_text {
+		case_sensitive = true
+		token = " #$^*\r\n\t"
+	    }
+	    field_search = [
+	    {
+		name = "${var.name}-1"
+		enable_analytics = true
+	    },
+	    {
+		token = " #$^*\r\n\t"
+		name = "${var.name}-2"
+		type = "text"
+	    }
+	    ]
+	}
+	`, rand)
 }
-`

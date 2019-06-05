@@ -76,12 +76,14 @@ func (client *Client) ExecuteScalingRuleWithCallback(request *ExecuteScalingRule
 // ExecuteScalingRuleRequest is the request struct for api ExecuteScalingRule
 type ExecuteScalingRuleRequest struct {
 	*requests.RpcRequest
-	OwnerId              requests.Integer `position:"Query" name:"OwnerId"`
-	ResourceOwnerAccount string           `position:"Query" name:"ResourceOwnerAccount"`
 	ResourceOwnerId      requests.Integer `position:"Query" name:"ResourceOwnerId"`
 	ScalingRuleAri       string           `position:"Query" name:"ScalingRuleAri"`
+	ResourceOwnerAccount string           `position:"Query" name:"ResourceOwnerAccount"`
 	ClientToken          string           `position:"Query" name:"ClientToken"`
+	BreachThreshold      requests.Float   `position:"Query" name:"BreachThreshold"`
 	OwnerAccount         string           `position:"Query" name:"OwnerAccount"`
+	OwnerId              requests.Integer `position:"Query" name:"OwnerId"`
+	MetricValue          requests.Float   `position:"Query" name:"MetricValue"`
 }
 
 // ExecuteScalingRuleResponse is the response struct for api ExecuteScalingRule

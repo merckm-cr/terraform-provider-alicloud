@@ -1,114 +1,118 @@
 package alicloud
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/hashicorp/terraform/helper/resource"
+	"fmt"
+
+	"github.com/hashicorp/terraform/helper/acctest"
 )
 
-func TestAccAlicloudRamRolesDataSource_for_policy(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck: func() {
-			testAccPreCheck(t)
-		},
-		Providers: testAccProviders,
-		Steps: []resource.TestStep{
-			{
-				Config: testAccCheckAlicloudRamRolesDataSourceForPolicyConfig,
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckAlicloudDataSourceID("data.alicloud_ram_roles.role"),
-					resource.TestCheckResourceAttr("data.alicloud_ram_roles.role", "roles.#", "1"),
-					resource.TestCheckResourceAttr("data.alicloud_ram_roles.role", "roles.0.name", "testAccCheckAlicloudRamRolesDataSourceForPolicyConfig"),
-				),
-			},
-		},
-	})
+func TestAccAlicloudRamRolesDataSource(t *testing.T) {
+	rand := acctest.RandIntRange(1000000, 99999999)
+
+	policyConf := dataSourceTestAccConfig{
+		existConfig: testAccCheckAlicloudRamRolesDataSourceConfig(rand, map[string]string{
+			"policy_name": `"${alicloud_ram_role_policy_attachment.default.policy_name}"`,
+			"policy_type": `"Custom"`,
+		}),
+	}
+
+	nameRegexConf := dataSourceTestAccConfig{
+		existConfig: testAccCheckAlicloudRamRolesDataSourceConfig(rand, map[string]string{
+			"name_regex": `"${alicloud_ram_role.default.name}"`,
+		}),
+		fakeConfig: testAccCheckAlicloudRamRolesDataSourceConfig(rand, map[string]string{
+			"name_regex": `"${alicloud_ram_role.default.name}_fake"`,
+		}),
+	}
+
+	allConf := dataSourceTestAccConfig{
+		existConfig: testAccCheckAlicloudRamRolesDataSourceConfig(rand, map[string]string{
+			"policy_name": `"${alicloud_ram_role_policy_attachment.default.policy_name}"`,
+			"policy_type": `"Custom"`,
+			"name_regex":  `"${alicloud_ram_role.default.name}"`,
+		}),
+		fakeConfig: testAccCheckAlicloudRamRolesDataSourceConfig(rand, map[string]string{
+			"policy_name": `"${alicloud_ram_role_policy_attachment.default.policy_name}"`,
+			"policy_type": `"Custom"`,
+			"name_regex":  `"${alicloud_ram_role.default.name}_fake"`,
+		}),
+	}
+
+	ramRolesCheckInfo.dataSourceTestCheck(t, rand, policyConf, nameRegexConf, allConf)
+
 }
 
-func TestAccAlicloudRamRolesDataSource_for_all(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck: func() {
-			testAccPreCheck(t)
-		},
-		Providers: testAccProviders,
-		Steps: []resource.TestStep{
-			{
-				Config: testAccCheckAlicloudRamRolesDataSourceForAllConfig,
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckAlicloudDataSourceID("data.alicloud_ram_roles.role"),
-				),
-			},
-		},
-	})
-}
+func testAccCheckAlicloudRamRolesDataSourceConfig(rand int, attrMap map[string]string) string {
+	region := defaultRegionToTest
+	var pairs []string
+	for k, v := range attrMap {
+		pairs = append(pairs, k+" = "+v)
+	}
 
-func TestAccAlicloudRamRolesDataSource_role_name_regex(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck: func() {
-			testAccPreCheck(t)
-		},
-		Providers: testAccProviders,
-		Steps: []resource.TestStep{
-			{
-				Config: testAccCheckAlicloudRamRolesDataSourceRoleNameRegexConfig,
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckAlicloudDataSourceID("data.alicloud_ram_roles.role"),
-					resource.TestCheckResourceAttr("data.alicloud_ram_roles.role", "roles.#", "1"),
-				),
-			},
-		},
-	})
-}
-
-const testAccCheckAlicloudRamRolesDataSourceForPolicyConfig = `
+	config := fmt.Sprintf(`
 variable "name" {
-  default = "testAccCheckAlicloudRamRolesDataSourceForPolicyConfig"
-}
-resource "alicloud_ram_policy" "policy" {
-  name = "${var.name}"
-  statement = [
-    {
-      effect = "Deny"
-      action = [
-        "oss:ListObjects",
-        "oss:ListObjects"]
-      resource = [
-        "acs:oss:*:*:mybucket",
-        "acs:oss:*:*:mybucket/*"]
-    }]
-  description = "this is a policy test"
-  force = true
+	  default = "tf-testAcc%sRamRolesDataSourceForPolicy-%d"
+	}
+	resource "alicloud_ram_policy" "default" {
+	  name = "${var.name}"
+	  statement = [
+	    {
+	      effect = "Deny"
+	      action = [
+		"oss:ListObjects",
+		"oss:ListObjects"]
+	      resource = [
+		"acs:oss:*:*:mybucket",
+		"acs:oss:*:*:mybucket/*"]
+	    }]
+	  description = "this is a policy test"
+	  force = true
+	}
+
+	resource "alicloud_ram_role" "default" {
+	  name = "${var.name}"
+	  services = ["apigateway.aliyuncs.com", "ecs.aliyuncs.com"]
+	  description = "this is a test"
+	  force = true
+	}
+
+	resource "alicloud_ram_role_policy_attachment" "default" {
+	  policy_name = "${alicloud_ram_policy.default.name}"
+	  role_name = "${alicloud_ram_role.default.name}"
+	  policy_type = "${alicloud_ram_policy.default.type}"
+	}
+data "alicloud_ram_roles" "default" {
+	%s
+}`, region, rand, strings.Join(pairs, "\n  "))
+	return config
 }
 
-resource "alicloud_ram_role" "role" {
-  name = "${var.name}"
-  services = ["apigateway.aliyuncs.com", "ecs.aliyuncs.com"]
-  description = "this is a test"
-  force = true
+var existRamRolesMapFunc = func(rand int) map[string]string {
+	return map[string]string{
+		"ids.#":               "1",
+		"names.#":             "1",
+		"roles.#":             "1",
+		"roles.0.id":          CHECKSET,
+		"roles.0.name":        fmt.Sprintf("tf-testAcc%sRamRolesDataSourceForPolicy-%d", defaultRegionToTest, rand),
+		"roles.0.arn":         CHECKSET,
+		"roles.0.description": "this is a test",
+		"roles.0.document":    CHECKSET,
+	}
 }
 
-resource "alicloud_ram_role_policy_attachment" "attach" {
-  policy_name = "${alicloud_ram_policy.policy.name}"
-  role_name = "${alicloud_ram_role.role.name}"
-  policy_type = "${alicloud_ram_policy.policy.type}"
+var fakeRamRolesMapFunc = func(rand int) map[string]string {
+	return map[string]string{
+		"ids.#":   "0",
+		"names.#": "0",
+		"roles.#": "0",
+	}
 }
 
-data "alicloud_ram_roles" "role" {
-  policy_name = "${alicloud_ram_role_policy_attachment.attach.policy_name}"
-  policy_type = "Custom"
-}`
-
-const testAccCheckAlicloudRamRolesDataSourceForAllConfig = `
-data "alicloud_ram_roles" "role" {
-}`
-
-const testAccCheckAlicloudRamRolesDataSourceRoleNameRegexConfig = `
-resource "alicloud_ram_role" "role" {
-  name = "testAccCheckAlicloudRamRolesDataSourceRoleNameRegexConfig"
-  services = ["apigateway.aliyuncs.com", "ecs.aliyuncs.com"]
-  description = "this is a test"
-  force = true
+var ramRolesCheckInfo = dataSourceAttr{
+	resourceId:   "data.alicloud_ram_roles.default",
+	existMapFunc: existRamRolesMapFunc,
+	fakeMapFunc:  fakeRamRolesMapFunc,
 }
-data "alicloud_ram_roles" "role" {
-  name_regex = "${alicloud_ram_role.role.name}"
-}`

@@ -2,12 +2,13 @@ package alicloud
 
 import (
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 
-	"github.com/denverdino/aliyungo/dns"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/alidns"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudDnsRecords() *schema.Resource {
@@ -63,7 +64,11 @@ func dataSourceAlicloudDnsRecords() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-
+			"urls": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			// Computed values
 			"records": {
 				Type:     schema.TypeList,
@@ -118,34 +123,43 @@ func dataSourceAlicloudDnsRecords() *schema.Resource {
 }
 
 func dataSourceAlicloudDnsRecordsRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).dnsconn
+	client := meta.(*connectivity.AliyunClient)
 
-	args := &dns.DescribeDomainRecordsNewArgs{
-		DomainName: d.Get("domain_name").(string),
-	}
+	request := alidns.CreateDescribeDomainRecordsRequest()
+	request.DomainName = d.Get("domain_name").(string)
 	if v, ok := d.GetOk("type"); ok && v.(string) != "" {
-		args.TypeKeyWord = v.(string)
+		request.TypeKeyWord = v.(string)
 	}
 
-	var allRecords []dns.RecordTypeNew
+	var allRecords []alidns.Record
 
-	pagination := getPagination(1, 50)
+	request.PageSize = requests.NewInteger(PageSizeLarge)
+	request.PageNumber = requests.NewInteger(1)
 	for {
-		args.Pagination = pagination
-		resp, err := conn.DescribeDomainRecordsNew(args)
+		raw, err := client.WithDnsClient(func(dnsClient *alidns.Client) (interface{}, error) {
+			return dnsClient.DescribeDomainRecords(request)
+		})
 		if err != nil {
-			return err
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_dns_records", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-		records := resp.DomainRecords.Record
-		allRecords = append(allRecords, records...)
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*alidns.DescribeDomainRecordsResponse)
+		records := response.DomainRecords.Record
+		for _, record := range records {
+			allRecords = append(allRecords, record)
+		}
 
-		if len(records) < pagination.PageSize {
+		if len(records) < PageSizeLarge {
 			break
 		}
-		pagination.PageNumber += 1
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			request.PageNumber = page
+		}
 	}
 
-	var filteredRecords []dns.RecordTypeNew
+	var filteredRecords []alidns.Record
 
 	for _, record := range allRecords {
 		if v, ok := d.GetOk("line"); ok && v.(string) != "" && strings.ToUpper(record.Line) != strings.ToUpper(v.(string)) {
@@ -177,16 +191,12 @@ func dataSourceAlicloudDnsRecordsRead(d *schema.ResourceData, meta interface{}) 
 		filteredRecords = append(filteredRecords, record)
 	}
 
-	if len(filteredRecords) < 1 {
-		return fmt.Errorf("Your query returned no results. Please change your search criteria and try again.")
-	}
-	log.Printf("[DEBUG] alicloud_dns_records - Records found: %#v", allRecords)
-
 	return recordsDecriptionAttributes(d, filteredRecords, meta)
 }
 
-func recordsDecriptionAttributes(d *schema.ResourceData, recordTypes []dns.RecordTypeNew, meta interface{}) error {
+func recordsDecriptionAttributes(d *schema.ResourceData, recordTypes []alidns.Record, meta interface{}) error {
 	var ids []string
+	var urls []string
 	var s []map[string]interface{}
 	for _, record := range recordTypes {
 		mapping := map[string]interface{}{
@@ -201,16 +211,18 @@ func recordsDecriptionAttributes(d *schema.ResourceData, recordTypes []dns.Recor
 			"ttl":         record.TTL,
 			"priority":    record.Priority,
 		}
-		log.Printf("[DEBUG] alicloud_dns_records - adding record: %v", mapping)
 		ids = append(ids, record.RecordId)
+		urls = append(urls, fmt.Sprintf("%v.%v", record.RR, record.DomainName))
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("records", s); err != nil {
-		return err
+		return WrapError(err)
 	}
-
+	if err := d.Set("urls", urls); err != nil {
+		return WrapError(err)
+	}
 	// create a json file in current directory and write data source to it.
 	if output, ok := d.GetOk("output_file"); ok && output.(string) != "" {
 		writeToFile(output.(string), s)

@@ -6,10 +6,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aliyun/alibaba-cloud-sdk-go/services/rds"
-	//"github.com/denverdino/aliyungo/ecs"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/dds"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/elasticsearch"
+	r_kvstore "github.com/aliyun/alibaba-cloud-sdk-go/services/r-kvstore"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/rds"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/slb"
+	"github.com/aliyun/fc-go-sdk"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudZones() *schema.Resource {
@@ -30,9 +35,33 @@ func dataSourceAlicloudZones() *schema.Resource {
 				ValidateFunc: validateAllowedStringValue([]string{
 					string(ResourceTypeInstance),
 					string(ResourceTypeRds),
+					string(ResourceTypeRkv),
 					string(ResourceTypeVSwitch),
 					string(ResourceTypeDisk),
 					string(IoOptimized),
+					string(ResourceTypeFC),
+					string(ResourceTypeElasticsearch),
+					string(ResourceTypeSlb),
+					string(ResourceTypeMongoDB),
+				}),
+			},
+			"available_slb_address_type": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				ValidateFunc: validateAllowedStringValue([]string{
+					string(Vpc),
+					string(ClassicIntranet),
+					string(ClassicInternet),
+				}),
+			},
+			"available_slb_address_ip_version": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				ValidateFunc: validateAllowedStringValue([]string{
+					string(IPV4),
+					string(IPV6),
 				}),
 			},
 			"available_disk_category": {
@@ -42,7 +71,7 @@ func dataSourceAlicloudZones() *schema.Resource {
 				ValidateFunc: validateDiskCategory,
 			},
 
-			"multi": &schema.Schema{
+			"multi": {
 				Type:     schema.TypeBool,
 				Optional: true,
 				Default:  false,
@@ -60,17 +89,27 @@ func dataSourceAlicloudZones() *schema.Resource {
 				ForceNew:     true,
 				ValidateFunc: validateAllowedStringValue([]string{string(Vpc), string(Classic)}),
 			},
-			"spot_strategy": &schema.Schema{
+			"spot_strategy": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
 				Default:      NoSpot,
 				ValidateFunc: validateInstanceSpotStrategy,
 			},
+			"enable_details": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+			},
 
 			"output_file": {
 				Type:     schema.TypeString,
 				Optional: true,
+			},
+			"ids": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 			// Computed values.
 			"zones": {
@@ -101,6 +140,16 @@ func dataSourceAlicloudZones() *schema.Resource {
 							Computed: true,
 							Elem:     &schema.Schema{Type: schema.TypeString},
 						},
+						"multi_zone_ids": {
+							Type:     schema.TypeList,
+							Computed: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
+						"slb_slave_zone_ids": {
+							Type:     schema.TypeList,
+							Computed: true,
+							Elem:     &schema.Schema{Type: schema.TypeString},
+						},
 					},
 				},
 			},
@@ -109,35 +158,152 @@ func dataSourceAlicloudZones() *schema.Resource {
 }
 
 func dataSourceAlicloudZonesRead(d *schema.ResourceData, meta interface{}) error {
-	resType, _ := d.Get("available_resource_creation").(string)
+	client := meta.(*connectivity.AliyunClient)
+	ecsService := EcsService{client}
+
+	resType := d.Get("available_resource_creation").(string)
 	multi := d.Get("multi").(bool)
-	client := meta.(*AliyunClient)
 	var zoneIds []string
 	rdsZones := make(map[string]string)
+	rkvZones := make(map[string]string)
+	mongoDBZones := make(map[string]string)
+
 	if strings.ToLower(Trim(resType)) == strings.ToLower(string(ResourceTypeRds)) {
 		request := rds.CreateDescribeRegionsRequest()
-		if regions, err := client.rdsconn.DescribeRegions(request); err != nil {
+		raw, err := client.WithRdsClient(func(rdsClient *rds.Client) (interface{}, error) {
+			return rdsClient.DescribeRegions(request)
+		})
+		if err != nil {
 			return fmt.Errorf("[ERROR] DescribeRegions got an error: %#v", err)
-		} else if len(regions.Regions.RDSRegion) <= 0 {
+		}
+		addDebug(request.GetActionName(), raw)
+		regions, _ := raw.(*rds.DescribeRegionsResponse)
+		if len(regions.Regions.RDSRegion) <= 0 {
 			return fmt.Errorf("[ERROR] There is no available region for RDS.")
-		} else {
-			for _, r := range regions.Regions.RDSRegion {
-				if multi && strings.Contains(r.ZoneId, MULTI_IZ_SYMBOL) && r.RegionId == string(getRegion(d, meta)) {
-					zoneIds = append(zoneIds, r.ZoneId)
+		}
+		for _, r := range regions.Regions.RDSRegion {
+			if multi && strings.Contains(r.ZoneId, MULTI_IZ_SYMBOL) && r.RegionId == string(client.Region) {
+				zoneIds = append(zoneIds, r.ZoneId)
+				continue
+			}
+			rdsZones[r.ZoneId] = r.RegionId
+		}
+	}
+	if strings.ToLower(Trim(resType)) == strings.ToLower(string(ResourceTypeRkv)) {
+		request := r_kvstore.CreateDescribeRegionsRequest()
+		raw, err := client.WithRkvClient(func(rkvClient *r_kvstore.Client) (interface{}, error) {
+			return rkvClient.DescribeRegions(request)
+		})
+		if err != nil {
+			return fmt.Errorf("[ERROR] DescribeRegions got an error: %#v", err)
+		}
+		regions, _ := raw.(*r_kvstore.DescribeRegionsResponse)
+		if len(regions.RegionIds.KVStoreRegion) <= 0 {
+			return fmt.Errorf("[ERROR] There is no available region for KVStore")
+		}
+		for _, r := range regions.RegionIds.KVStoreRegion {
+			for _, zoneID := range r.ZoneIdList.ZoneId {
+				if multi && strings.Contains(zoneID, MULTI_IZ_SYMBOL) && r.RegionId == string(client.Region) {
+					zoneIds = append(zoneIds, zoneID)
 					continue
 				}
-				rdsZones[r.ZoneId] = r.RegionId
+				rkvZones[zoneID] = r.RegionId
 			}
 		}
 	}
-	if len(zoneIds) > 0 {
-		sort.Strings(zoneIds)
-		return multiZonesDescriptionAttributes(d, zoneIds)
-	} else if multi {
-		return fmt.Errorf("There is no multi zones in the current region %s. Please change region and try again.", getRegion(d, meta))
+	if strings.ToLower(Trim(resType)) == strings.ToLower(string(ResourceTypeMongoDB)) {
+		request := dds.CreateDescribeRegionsRequest()
+		raw, err := client.WithDdsClient(func(ddsClient *dds.Client) (interface{}, error) {
+			return ddsClient.DescribeRegions(request)
+		})
+		if err != nil {
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_zones", request.GetActionName(), AlibabaCloudSdkGoERROR)
+		}
+		regions, _ := raw.(*dds.DescribeRegionsResponse)
+		if len(regions.Regions.DdsRegion) <= 0 {
+			return WrapError(fmt.Errorf("[ERROR] There is no available region for MongoDB."))
+		}
+		for _, r := range regions.Regions.DdsRegion {
+			for _, zonid := range r.Zones.Zone {
+				if multi && strings.Contains(zonid.ZoneId, MULTI_IZ_SYMBOL) && r.RegionId == string(client.Region) {
+					zoneIds = append(zoneIds, zonid.ZoneId)
+					continue
+				}
+				mongoDBZones[zonid.ZoneId] = r.RegionId
+			}
+		}
+	}
+	elasticsearchZones := make(map[string]string)
+	if strings.ToLower(Trim(resType)) == strings.ToLower(string(ResourceTypeElasticsearch)) {
+		request := elasticsearch.CreateGetRegionConfigurationRequest()
+		raw, err := client.WithElasticsearchClient(func(elasticsearchClient *elasticsearch.Client) (interface{}, error) {
+			return elasticsearchClient.GetRegionConfiguration(request)
+		})
+
+		if err != nil {
+			return BuildWrapError("[Error] DescribeZones", "", AlibabaCloudSdkGoERROR, err, "")
+		}
+
+		zones, _ := raw.(*elasticsearch.GetRegionConfigurationResponse)
+		for _, zoneID := range zones.Result.Zones {
+			if multi && strings.Contains(zoneID, MULTI_IZ_SYMBOL) {
+				zoneIds = append(zoneIds, zoneID)
+				continue
+			}
+
+			elasticsearchZones[zoneID] = string(client.Region)
+		}
 	}
 
-	_, validZones, err := client.DescribeAvailableResources(d, meta, ZoneResource)
+	if len(zoneIds) > 0 {
+		sort.Strings(zoneIds)
+		return zoneIdsDescriptionAttributes(d, zoneIds)
+	}
+
+	// Retrieving available zones for VPC-FC
+	if strings.ToLower(Trim(resType)) == strings.ToLower(string(ResourceTypeFC)) {
+		raw, err := client.WithFcClient(func(fcClient *fc.Client) (interface{}, error) {
+			return fcClient.GetAccountSettings(fc.NewGetAccountSettingsInput())
+		})
+		if err != nil {
+			return fmt.Errorf("[API ERROR] FC GetAccountSettings: %#v", err)
+		}
+		out, _ := raw.(*fc.GetAccountSettingsOutput)
+		if out != nil && len(out.AvailableAZs) > 0 {
+			sort.Strings(out.AvailableAZs)
+			return zoneIdsDescriptionAttributes(d, out.AvailableAZs)
+		}
+	}
+
+	// Retrieving available zones for SLB
+	slaveZones := make(map[string][]string)
+	if strings.ToLower(Trim(resType)) == strings.ToLower(string(ResourceTypeSlb)) {
+		request := slb.CreateDescribeAvailableResourceRequest()
+		if ipVersion, ok := d.GetOk("available_slb_address_ip_version"); ok {
+			request.AddressIPVersion = ipVersion.(string)
+		}
+		if addressType, ok := d.GetOk("available_slb_address_type"); ok {
+			request.AddressType = addressType.(string)
+		}
+		raw, err := client.WithSlbClient(func(slbClient *slb.Client) (interface{}, error) {
+			return slbClient.DescribeAvailableResource(request)
+		})
+		if err != nil {
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_zones", request.GetActionName(), AlibabaCloudSdkGoERROR)
+		}
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*slb.DescribeAvailableResourceResponse)
+		for _, resource := range response.AvailableResources.AvailableResource {
+			slaveIds := slaveZones[resource.MasterZoneId]
+			slaveIds = append(slaveIds, resource.SlaveZoneId)
+			if len(slaveIds) > 0 {
+				sort.Strings(slaveIds)
+			}
+			slaveZones[resource.MasterZoneId] = slaveIds
+		}
+	}
+
+	_, validZones, err := ecsService.DescribeAvailableResources(d, meta, ZoneResource)
 	if err != nil {
 		return err
 	}
@@ -150,14 +316,17 @@ func dataSourceAlicloudZonesRead(d *schema.ResourceData, meta interface{}) error
 		req.SpotStrategy = v.(string)
 	}
 
-	resp, err := client.ecsconn.DescribeZones(req)
+	raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+		return ecsClient.DescribeZones(req)
+	})
 	if err != nil {
 		return fmt.Errorf("DescribeZones got an error: %#v", err)
 	}
-
+	resp, _ := raw.(*ecs.DescribeZonesResponse)
 	if resp == nil || len(resp.Zones.Zone) < 1 {
-		return fmt.Errorf("There are no availability zones in the region: %#v.", getRegion(d, meta))
+		return fmt.Errorf("There are no availability zones in the region: %#v.", client.Region)
 	}
+
 	mapZones := make(map[string]ecs.Zone)
 	insType, _ := d.Get("available_instance_type").(string)
 	diskType, _ := d.Get("available_disk_category").(string)
@@ -180,32 +349,60 @@ func dataSourceAlicloudZonesRead(d *schema.ResourceData, meta interface{}) error
 					continue
 				}
 			}
+			if len(rkvZones) > 0 {
+				if _, ok := rkvZones[zone.ZoneId]; !ok {
+					continue
+				}
+			}
+			if len(mongoDBZones) > 0 {
+				if _, ok := mongoDBZones[zone.ZoneId]; !ok {
+					continue
+				}
+			}
+			if len(elasticsearchZones) > 0 {
+				if _, ok := elasticsearchZones[zone.ZoneId]; !ok {
+					continue
+				}
+			}
+			if len(slaveZones) > 0 {
+				if _, ok := slaveZones[zone.ZoneId]; !ok {
+					continue
+				}
+			}
+
 			zoneIds = append(zoneIds, zone.ZoneId)
 			mapZones[zone.ZoneId] = zone
 		}
 	}
 
-	if len(zoneIds) <= 0 {
-		return fmt.Errorf("Your query zones returned no results. Please change your search criteria and try again.")
+	if len(zoneIds) > 0 {
+		// Sort zones before reading
+		sort.Strings(zoneIds)
 	}
-
-	// Sort zones before reading
-	sort.Strings(zoneIds)
 
 	var s []map[string]interface{}
 	for _, zoneId := range zoneIds {
-		mapping := map[string]interface{}{
-			"id":                          zoneId,
-			"local_name":                  mapZones[zoneId].LocalName,
-			"available_instance_types":    mapZones[zoneId].AvailableInstanceTypes.InstanceTypes,
-			"available_resource_creation": mapZones[zoneId].AvailableResourceCreation.ResourceTypes,
-			"available_disk_categories":   mapZones[zoneId].AvailableDiskCategories.DiskCategories,
+		mapping := map[string]interface{}{"id": zoneId}
+		if len(slaveZones) > 0 {
+			mapping["slb_slave_zone_ids"] = slaveZones[zoneId]
 		}
+		if !d.Get("enable_details").(bool) {
+			s = append(s, mapping)
+			continue
+		}
+		mapping["local_name"] = mapZones[zoneId].LocalName
+		mapping["available_instance_types"] = mapZones[zoneId].AvailableInstanceTypes.InstanceTypes
+		mapping["available_resource_creation"] = mapZones[zoneId].AvailableResourceCreation.ResourceTypes
+		mapping["available_disk_categories"] = mapZones[zoneId].AvailableDiskCategories.DiskCategories
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(zoneIds))
 	if err := d.Set("zones", s); err != nil {
+		return err
+	}
+
+	if err := d.Set("ids", zoneIds); err != nil {
 		return err
 	}
 
@@ -229,13 +426,16 @@ func constraints(arr interface{}, v string) bool {
 	return false
 }
 
-func multiZonesDescriptionAttributes(d *schema.ResourceData, zones []string) error {
+func zoneIdsDescriptionAttributes(d *schema.ResourceData, zones []string) error {
 	var s []map[string]interface{}
+	var zoneIds []string
 	for _, t := range zones {
 		mapping := map[string]interface{}{
-			"id": t,
+			"id":             t,
+			"multi_zone_ids": splitMultiZoneId(t),
 		}
 		s = append(s, mapping)
+		zoneIds = append(zoneIds, t)
 	}
 
 	d.SetId(dataResourceIdHash(zones))
@@ -243,10 +443,25 @@ func multiZonesDescriptionAttributes(d *schema.ResourceData, zones []string) err
 		return err
 	}
 
+	if err := d.Set("ids", zoneIds); err != nil {
+		return err
+	}
 	// create a json file in current directory and write data source to it.
 	if output, ok := d.GetOk("output_file"); ok && output.(string) != "" {
 		writeToFile(output.(string), s)
 	}
 
 	return nil
+}
+
+func splitMultiZoneId(id string) (ids []string) {
+	if !(strings.Contains(id, MULTI_IZ_SYMBOL) || strings.Contains(id, "(")) {
+		return
+	}
+	firstIndex := strings.Index(id, MULTI_IZ_SYMBOL)
+	secondIndex := strings.Index(id, "(")
+	for _, p := range strings.Split(id[secondIndex+1:len(id)-1], COMMA_SEPARATED) {
+		ids = append(ids, id[:firstIndex]+string(p))
+	}
+	return
 }

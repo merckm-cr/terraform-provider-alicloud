@@ -1,6 +1,10 @@
 package alicloud
 
-import "testing"
+import (
+	"math"
+	"strconv"
+	"testing"
+)
 
 func TestValidateInstancePort(t *testing.T) {
 	validPorts := []int{1, 22, 80, 100, 8088, 65535}
@@ -236,24 +240,6 @@ func TestValidateCIDRNetworkAddress(t *testing.T) {
 	}
 }
 
-func TestValidateRouteEntryNextHopType(t *testing.T) {
-	validNexthopType := []string{"Instance", "RouterInterface"}
-	for _, v := range validNexthopType {
-		_, errors := validateRouteEntryNextHopType(v, "route_entry_nexthop_type")
-		if len(errors) != 0 {
-			t.Fatalf("%q should be a valid route entry nexthop type: %q", v, errors)
-		}
-	}
-
-	invalidNexthopType := []string{"ri", "vpc"}
-	for _, v := range invalidNexthopType {
-		_, errors := validateRouteEntryNextHopType(v, "route_entry_nexthop_type")
-		if len(errors) == 0 {
-			t.Fatalf("%q should be an invalid route entry nexthop type", v)
-		}
-	}
-}
-
 func TestValidateSwitchCIDRNetworkAddress(t *testing.T) {
 	validSwitchCIDRNetworkAddress := []string{"192.168.10.0/24", "0.0.0.0/16", "127.0.0.0/29", "10.121.10.0/24"}
 	for _, v := range validSwitchCIDRNetworkAddress {
@@ -375,7 +361,7 @@ func TestValidateSlbName(t *testing.T) {
 }
 
 func TestValidateSlbInternetChargeType(t *testing.T) {
-	validSlbInternetChargeType := []string{"paybybandwidth", "paybytraffic"}
+	validSlbInternetChargeType := []string{"PayByBandwidth", "PayByTraffic"}
 	for _, v := range validSlbInternetChargeType {
 		_, errors := validateSlbInternetChargeType(v, "slb_internet_charge_type")
 		if len(errors) != 0 {
@@ -383,7 +369,7 @@ func TestValidateSlbInternetChargeType(t *testing.T) {
 		}
 	}
 
-	invalidSlbInternetChargeType := []string{"PayByBandwidth", "PayByTraffic"}
+	invalidSlbInternetChargeType := []string{"PayByBandwid", "PayByTraff"}
 	for _, v := range invalidSlbInternetChargeType {
 		_, errors := validateSlbInternetChargeType(v, "slb_internet_charge_type")
 		if len(errors) == 0 {
@@ -481,4 +467,27 @@ func TestValidateIntegerInRange(t *testing.T) {
 			t.Fatalf("%q should be an integer outside range (%d, %d)", v, min, max)
 		}
 	}
+}
+
+func TestValidateStringConvertInt64(t *testing.T) {
+	_, errors := validateStringConvertInt64()(math.MaxInt64, "name")
+	if len(errors) == 0 {
+		t.Fatalf("%q cannot convert to int64", 110)
+	}
+
+	_, errors = validateStringConvertInt64()("abcd", "name")
+	if len(errors) == 0 {
+		t.Fatalf("%q cannot convert to int64", "abcd")
+	}
+
+	_, errors = validateStringConvertInt64()("6666666", "name")
+	if len(errors) != 0 {
+		t.Fatalf("%q can convert to int64", "666666")
+	}
+
+	_, errors = validateStringConvertInt64()(strconv.FormatInt(math.MaxInt64, 10), "name")
+	if len(errors) != 0 {
+		t.Fatalf("%q can convert to int64", math.MaxInt64)
+	}
+
 }

@@ -1,14 +1,13 @@
 package alicloud
 
 import (
-	"fmt"
-	"log"
 	"regexp"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/vpc"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudVSwitches() *schema.Resource {
@@ -46,7 +45,16 @@ func dataSourceAlicloudVSwitches() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-
+			"ids": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"names": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			// Computed values
 			"vswitches": {
 				Type:     schema.TypeList,
@@ -97,16 +105,19 @@ func dataSourceAlicloudVSwitches() *schema.Resource {
 	}
 }
 func dataSourceAlicloudVSwitchesRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).vpcconn
+	client := meta.(*connectivity.AliyunClient)
 
-	args := vpc.CreateDescribeVSwitchesRequest()
-	args.RegionId = string(getRegion(d, meta))
-	args.PageSize = requests.NewInteger(PageSizeLarge)
+	request := vpc.CreateDescribeVSwitchesRequest()
+	request.RegionId = string(client.Region)
+	// API DescribeVSwitches has some limitations
+	// If there is no vpc_id, setting PageSizeSmall can avoid ServiceUnavailable Error
+	request.PageSize = requests.NewInteger(PageSizeSmall)
+	request.PageNumber = requests.NewInteger(1)
 	if v, ok := d.GetOk("zone_id"); ok {
-		args.ZoneId = Trim(v.(string))
+		request.ZoneId = Trim(v.(string))
 	}
 	if v, ok := d.GetOk("vpc_id"); ok {
-		args.VpcId = Trim(v.(string))
+		request.VpcId = Trim(v.(string))
 	}
 
 	var allVSwitches []vpc.VSwitch
@@ -116,17 +127,25 @@ func dataSourceAlicloudVSwitchesRead(d *schema.ResourceData, meta interface{}) e
 			nameRegex = r
 		}
 	}
+	invoker := NewInvoker()
 	for {
-		resp, err := conn.DescribeVSwitches(args)
-		if err != nil {
+		var raw interface{}
+		var err error
+		if err = invoker.Run(func() error {
+			raw, err = client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+				return vpcClient.DescribeVSwitches(request)
+			})
 			return err
+		}); err != nil {
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_vswitches", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-
-		if resp == nil || len(resp.VSwitches.VSwitch) < 1 {
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*vpc.DescribeVSwitchesResponse)
+		if len(response.VSwitches.VSwitch) < 1 {
 			break
 		}
 
-		for _, vsw := range resp.VSwitches.VSwitch {
+		for _, vsw := range response.VSwitches.VSwitch {
 			if v, ok := d.GetOk("cidr_block"); ok && vsw.CidrBlock != Trim(v.(string)) {
 				continue
 			}
@@ -143,26 +162,26 @@ func dataSourceAlicloudVSwitchesRead(d *schema.ResourceData, meta interface{}) e
 			allVSwitches = append(allVSwitches, vsw)
 		}
 
-		if len(resp.VSwitches.VSwitch) < PageSizeLarge {
+		if len(response.VSwitches.VSwitch) < PageSizeSmall {
 			break
 		}
 
-		args.PageNumber = args.PageNumber + requests.NewInteger(1)
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			request.PageNumber = page
+		}
 	}
-
-	if len(allVSwitches) < 1 {
-		return fmt.Errorf("Your query returned no results. Please change your search criteria and try again.")
-	}
-
-	log.Printf("[DEBUG] alicloud_vswitches - VSwitches found: %#v", allVSwitches)
 
 	return VSwitchesDecriptionAttributes(d, allVSwitches, meta)
 }
 
 func VSwitchesDecriptionAttributes(d *schema.ResourceData, vsws []vpc.VSwitch, meta interface{}) error {
+	client := meta.(*connectivity.AliyunClient)
 	var ids []string
+	var names []string
 	var s []map[string]interface{}
-	instReq := ecs.CreateDescribeInstancesRequest()
+	request := ecs.CreateDescribeInstancesRequest()
 
 	for _, vsw := range vsws {
 		mapping := map[string]interface{}{
@@ -175,17 +194,23 @@ func VSwitchesDecriptionAttributes(d *schema.ResourceData, vsws []vpc.VSwitch, m
 			"is_default":    vsw.IsDefault,
 			"creation_time": vsw.CreationTime,
 		}
-		instReq.VpcId = vsw.VpcId
-		instReq.VSwitchId = vsw.VSwitchId
-		instReq.ZoneId = vsw.ZoneId
-		resp, err := meta.(*AliyunClient).ecsconn.DescribeInstances(instReq)
+		request.VpcId = vsw.VpcId
+		request.VSwitchId = vsw.VSwitchId
+		request.ZoneId = vsw.ZoneId
+		raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+			return ecsClient.DescribeInstances(request)
+		})
 		if err != nil {
-			return fmt.Errorf("DescribeInstances got an error: %#v.", err)
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_vswitches", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-		if resp != nil && len(resp.Instances.Instance) > 0 {
-			instance_ids := make([]string, len(resp.Instances.Instance))
+
+		addDebug(request.GetActionName(), raw)
+
+		response, _ := raw.(*ecs.DescribeInstancesResponse)
+		if len(response.Instances.Instance) > 0 {
+			instance_ids := make([]string, len(response.Instances.Instance))
 			if len(instance_ids) > 0 {
-				for _, inst := range resp.Instances.Instance {
+				for _, inst := range response.Instances.Instance {
 					instance_ids = append(instance_ids, inst.InstanceId)
 				}
 			}
@@ -193,14 +218,20 @@ func VSwitchesDecriptionAttributes(d *schema.ResourceData, vsws []vpc.VSwitch, m
 		}
 
 		ids = append(ids, vsw.VSwitchId)
+		names = append(names, vsw.VSwitchName)
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("vswitches", s); err != nil {
-		return err
+		return WrapError(err)
 	}
-
+	if err := d.Set("names", names); err != nil {
+		return WrapError(err)
+	}
+	if err := d.Set("ids", ids); err != nil {
+		return WrapError(err)
+	}
 	// create a json file in current directory and write data source to it.
 	if output, ok := d.GetOk("output_file"); ok && output.(string) != "" {
 		writeToFile(output.(string), s)

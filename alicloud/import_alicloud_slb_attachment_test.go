@@ -7,18 +7,18 @@ import (
 )
 
 func TestAccAlicloudSlbAttachment_import(t *testing.T) {
-	resourceName := "alicloud_slb_attachment.foo"
+	resourceName := "alicloud_slb_attachment.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSlbDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccSlbAttachment,
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,

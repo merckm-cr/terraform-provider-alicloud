@@ -10,6 +10,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudImages() *schema.Resource {
@@ -38,6 +39,11 @@ func dataSourceAlicloudImages() *schema.Resource {
 			"output_file": {
 				Type:     schema.TypeString,
 				Optional: true,
+			},
+			"ids": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 			// Computed values.
 			"images": {
@@ -162,7 +168,7 @@ func dataSourceAlicloudImages() *schema.Resource {
 
 // dataSourceAlicloudImagesDescriptionRead performs the Alicloud Image lookup.
 func dataSourceAlicloudImagesRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ecsconn
+	client := meta.(*connectivity.AliyunClient)
 
 	nameRegex, nameRegexOk := d.GetOk("name_regex")
 	owners, ownersOk := d.GetOk("owners")
@@ -183,10 +189,13 @@ func dataSourceAlicloudImagesRead(d *schema.ResourceData, meta interface{}) erro
 	var allImages []ecs.Image
 
 	for {
-		resp, err := conn.DescribeImages(params)
+		raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+			return ecsClient.DescribeImages(params)
+		})
 		if err != nil {
 			return err
 		}
+		resp, _ := raw.(*ecs.DescribeImagesResponse)
 		if resp == nil || len(resp.Images.Image) < 1 {
 			break
 		}
@@ -197,7 +206,11 @@ func dataSourceAlicloudImagesRead(d *schema.ResourceData, meta interface{}) erro
 			break
 		}
 
-		params.PageNumber = params.PageNumber + requests.NewInteger(1)
+		if page, err := getNextpageNumber(params.PageNumber); err != nil {
+			return err
+		} else {
+			params.PageNumber = page
+		}
 	}
 
 	var filteredImages []ecs.Image
@@ -222,11 +235,7 @@ func dataSourceAlicloudImagesRead(d *schema.ResourceData, meta interface{}) erro
 	}
 
 	var images []ecs.Image
-	if len(filteredImages) < 1 {
-		return fmt.Errorf("Your query returned no results. Please change your search criteria and try again.")
-	}
 
-	log.Printf("[DEBUG] alicloud_image - multiple results found and `most_recent` is set to: %t", mostRecent.(bool))
 	if len(filteredImages) > 1 && mostRecent.(bool) {
 		// Query returned single result.
 		images = append(images, mostRecentImage(filteredImages))
@@ -234,7 +243,6 @@ func dataSourceAlicloudImagesRead(d *schema.ResourceData, meta interface{}) erro
 		images = filteredImages
 	}
 
-	log.Printf("[DEBUG] alicloud_image - Images found: %#v", images)
 	return imagesDescriptionAttributes(d, images, meta)
 }
 
@@ -271,13 +279,15 @@ func imagesDescriptionAttributes(d *schema.ResourceData, images []ecs.Image, met
 			"tags":                 imageTagsMappings(d, image.ImageId, meta),
 		}
 
-		log.Printf("[DEBUG] alicloud_image - adding image mapping: %v", mapping)
 		ids = append(ids, image.ImageId)
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("images", s); err != nil {
+		return err
+	}
+	if err := d.Set("ids", ids); err != nil {
 		return err
 	}
 
@@ -321,7 +331,6 @@ func imageDiskDeviceMappings(m []ecs.DiskDeviceMapping) []map[string]interface{}
 			"snapshot_id": v.SnapshotId,
 		}
 
-		log.Printf("[DEBUG] alicloud_image - adding disk device mapping: %v", mapping)
 		s = append(s, mapping)
 	}
 
@@ -330,15 +339,14 @@ func imageDiskDeviceMappings(m []ecs.DiskDeviceMapping) []map[string]interface{}
 
 //Returns a mapping of image tags
 func imageTagsMappings(d *schema.ResourceData, imageId string, meta interface{}) map[string]string {
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	ecsService := EcsService{client}
 
-	tags, err := client.DescribeTags(imageId, TagResourceImage)
+	tags, err := ecsService.DescribeTags(imageId, TagResourceImage)
 
 	if err != nil {
-		log.Printf("[ERROR] DescribeTags for image got error: %#v", err)
 		return nil
 	}
 
-	log.Printf("[DEBUG] DescribeTags for image : %v", tags)
 	return tagsToMap(tags)
 }

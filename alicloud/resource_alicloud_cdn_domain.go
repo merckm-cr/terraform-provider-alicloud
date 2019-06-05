@@ -9,6 +9,7 @@ import (
 	"github.com/denverdino/aliyungo/cdn"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudCdnDomain() *schema.Resource {
@@ -19,36 +20,39 @@ func resourceAlicloudCdnDomain() *schema.Resource {
 		Delete: resourceAlicloudCdnDomainDelete,
 
 		Schema: map[string]*schema.Schema{
-			"domain_name": &schema.Schema{
+			"domain_name": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ValidateFunc: validateDomainName,
 			},
-			"cdn_type": &schema.Schema{
+			"cdn_type": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ValidateFunc: validateCdnType,
 			},
-			"source_type": &schema.Schema{
+			"source_type": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ValidateFunc: validateCdnSourceType,
+				Deprecated:   "Use `alicloud_cdn_domain_new` configuration `sources` block `type` argument instead.",
 			},
-			"source_port": &schema.Schema{
+			"source_port": {
 				Type:         schema.TypeInt,
 				Optional:     true,
 				Default:      80,
 				ValidateFunc: validateCdnSourcePort,
+				Deprecated:   "Use `alicloud_cdn_domain_new` configuration `sources` block `port` argument instead.",
 			},
-			"sources": &schema.Schema{
+			"sources": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
-				MaxItems: 20,
+				MaxItems:   20,
+				Deprecated: "Use `alicloud_cdn_domain_new` configuration `sources` argument instead.",
 			},
-			"scope": &schema.Schema{
+			"scope": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Computed:     true,
@@ -56,50 +60,51 @@ func resourceAlicloudCdnDomain() *schema.Resource {
 			},
 
 			// configs
-			"optimize_enable": &schema.Schema{
+			"optimize_enable": {
 				Type:         schema.TypeString,
 				Optional:     true,
-				Default:      "off",
 				ValidateFunc: validateCdnEnable,
+				Deprecated:   "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
-			"page_compress_enable": &schema.Schema{
+			"page_compress_enable": {
 				Type:         schema.TypeString,
 				Optional:     true,
-				Default:      "off",
 				ValidateFunc: validateCdnEnable,
+				Deprecated:   "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
-			"range_enable": &schema.Schema{
+			"range_enable": {
 				Type:         schema.TypeString,
 				Optional:     true,
-				Default:      "off",
 				ValidateFunc: validateCdnEnable,
+				Deprecated:   "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
-			"video_seek_enable": &schema.Schema{
+			"video_seek_enable": {
 				Type:         schema.TypeString,
 				Optional:     true,
-				Default:      "off",
 				ValidateFunc: validateCdnEnable,
+				Deprecated:   "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
-			"block_ips": &schema.Schema{
+			"block_ips": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
+				Deprecated: "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
 
-			"parameter_filter_config": &schema.Schema{
+			"parameter_filter_config": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"enable": &schema.Schema{
+						"enable": {
 							Type:         schema.TypeString,
 							Optional:     true,
 							Default:      "off",
 							ValidateFunc: validateCdnEnable,
 						},
-						"hash_key_args": &schema.Schema{
+						"hash_key_args": {
 							Type:     schema.TypeList,
 							Optional: true,
 							Computed: true,
@@ -111,10 +116,11 @@ func resourceAlicloudCdnDomain() *schema.Resource {
 						},
 					},
 				},
-				MaxItems: 1,
+				MaxItems:   1,
+				Deprecated: "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
 
-			"page_404_config": &schema.Schema{
+			"page_404_config": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
@@ -135,10 +141,11 @@ func resourceAlicloudCdnDomain() *schema.Resource {
 						},
 					},
 				},
-				MaxItems: 1,
+				MaxItems:   1,
+				Deprecated: "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
 
-			"refer_config": &schema.Schema{
+			"refer_config": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
@@ -164,10 +171,38 @@ func resourceAlicloudCdnDomain() *schema.Resource {
 						},
 					},
 				},
-				MaxItems: 1,
+				MaxItems:   1,
+				Deprecated: "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
 
-			"auth_config": &schema.Schema{
+			"certificate_config": {
+				Type:     schema.TypeList,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"server_certificate": {
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"server_certificate_status": {
+							Type:         schema.TypeString,
+							Default:      "on",
+							Optional:     true,
+							ValidateFunc: validateCdnEnable,
+						},
+						"private_key": {
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
+						},
+					},
+				},
+				MaxItems:   1,
+				Deprecated: "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
+			},
+
+			"auth_config": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
@@ -197,69 +232,72 @@ func resourceAlicloudCdnDomain() *schema.Resource {
 						},
 					},
 				},
-				MaxItems: 1,
+				MaxItems:   1,
+				Deprecated: "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
 
-			"http_header_config": &schema.Schema{
+			"http_header_config": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"header_key": &schema.Schema{
+						"header_key": {
 							Type:         schema.TypeString,
 							Required:     true,
 							ValidateFunc: validateCdnHttpHeader,
 						},
-						"header_value": &schema.Schema{
+						"header_value": {
 							Type:     schema.TypeString,
 							Required: true,
 						},
-						"header_id": &schema.Schema{
+						"header_id": {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
 					},
 				},
-				MaxItems: 10,
+				MaxItems:   10,
+				Deprecated: "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
 
-			"cache_config": &schema.Schema{
+			"cache_config": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"cache_content": &schema.Schema{
+						"cache_content": {
 							Type:     schema.TypeString,
 							Required: true,
 						},
-						"ttl": &schema.Schema{
+						"ttl": {
 							Type:     schema.TypeInt,
 							Required: true,
 						},
-						"cache_type": &schema.Schema{
+						"cache_type": {
 							Type:         schema.TypeString,
 							Required:     true,
 							ValidateFunc: validateCacheType,
 						},
-						"weight": &schema.Schema{
+						"weight": {
 							Type:         schema.TypeInt,
 							Optional:     true,
 							Default:      1,
 							ValidateFunc: validateIntegerInRange(1, 99),
 						},
-						"cache_id": &schema.Schema{
+						"cache_id": {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
 					},
 				},
+				Deprecated: "Use `alicloud_cdn_domain_config` configuration `function_name` and `function_args` arguments instead.",
 			},
 		},
 	}
 }
 
 func resourceAlicloudCdnDomainCreate(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).cdnconn
+	client := meta.(*connectivity.AliyunClient)
 
 	args := cdn.AddDomainRequest{
 		DomainName: d.Get("domain_name").(string),
@@ -285,17 +323,25 @@ func resourceAlicloudCdnDomainCreate(d *schema.ResourceData, meta interface{}) e
 			return fmt.Errorf("SourceType is required when 'cdn_type' is not 'liveStream'.")
 		}
 	}
-	_, err := conn.AddCdnDomain(args)
+	_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return cdnClient.AddCdnDomain(args)
+	})
 	if err != nil {
 		return fmt.Errorf("AddCdnDomain got an error: %#v", err)
 	}
 
 	d.SetId(args.DomainName)
+
+	err = WaitForDomainStatus(d.Id(), Configuring, 60, meta)
+	if err != nil {
+		return fmt.Errorf("Timeout when Cdn Domain Available. Error: %#v", err)
+	}
+
 	return resourceAlicloudCdnDomainUpdate(d, meta)
 }
 
 func resourceAlicloudCdnDomainUpdate(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).cdnconn
+	client := meta.(*connectivity.AliyunClient)
 
 	d.Partial(true)
 
@@ -322,7 +368,9 @@ func resourceAlicloudCdnDomainUpdate(d *schema.ResourceData, meta interface{}) e
 			attributeUpdate = true
 		}
 		if attributeUpdate {
-			_, err := conn.ModifyCdnDomain(args)
+			_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+				return cdnClient.ModifyCdnDomain(args)
+			})
 			if err != nil {
 				return fmt.Errorf("ModifyCdnDomain got an error: %#v", err)
 			}
@@ -330,7 +378,7 @@ func resourceAlicloudCdnDomainUpdate(d *schema.ResourceData, meta interface{}) e
 	}
 
 	// set optimize_enable 、range_enable、page_compress_enable and video_seek_enable
-	if err := enableConfigUpdate(conn, d); err != nil {
+	if err := enableConfigUpdate(client, d); err != nil {
 		return err
 	}
 
@@ -338,43 +386,58 @@ func resourceAlicloudCdnDomainUpdate(d *schema.ResourceData, meta interface{}) e
 		d.SetPartial("block_ips")
 		blockIps := expandStringList(d.Get("block_ips").(*schema.Set).List())
 		args := cdn.IpBlackRequest{DomainName: d.Id(), BlockIps: strings.Join(blockIps, ",")}
-		if _, err := conn.SetIpBlackListConfig(args); err != nil {
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetIpBlackListConfig(args)
+		})
+		if err != nil {
 			return err
 		}
 	}
 
 	if d.HasChange("parameter_filter_config") {
-		if err := queryStringConfigUpdate(conn, d); err != nil {
+		if err := queryStringConfigUpdate(client, d); err != nil {
 			return err
 		}
 	}
 
 	if d.HasChange("page_404_config") {
-		if err := page404ConfigUpdate(conn, d); err != nil {
+		if err := page404ConfigUpdate(client, d); err != nil {
 			return err
 		}
 	}
 
 	if d.HasChange("refer_config") {
-		if err := referConfigUpdate(conn, d); err != nil {
+		if err := referConfigUpdate(client, d); err != nil {
 			return err
 		}
 	}
 
 	if d.HasChange("auth_config") {
-		if err := authConfigUpdate(conn, d); err != nil {
+		if err := authConfigUpdate(client, d); err != nil {
 			return err
 		}
 	}
 
 	if d.HasChange("http_header_config") {
-		if err := httpHeaderConfigUpdate(conn, d); err != nil {
+		if err := httpHeaderConfigUpdate(client, d); err != nil {
 			return err
 		}
 	}
 
 	if d.HasChange("cache_config") {
-		if err := cacheConfigUpdate(conn, d); err != nil {
+		if err := cacheConfigUpdate(client, d); err != nil {
+			return err
+		}
+	}
+
+	if d.HasChange("certificate_config") {
+		if d.IsNewResource() {
+			err := WaitForDomainStatus(d.Id(), Online, 360, meta)
+			if err != nil {
+				return fmt.Errorf("Timeout when Cdn Domain Online. Error: %#v", err)
+			}
+		}
+		if err := certificateConfigUpdate(client, d); err != nil {
 			return err
 		}
 	}
@@ -384,17 +447,12 @@ func resourceAlicloudCdnDomainUpdate(d *schema.ResourceData, meta interface{}) e
 }
 
 func resourceAlicloudCdnDomainRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).cdnconn
+	client := meta.(*connectivity.AliyunClient)
 
-	args := cdn.DescribeDomainRequest{
-		DomainName: d.Id(),
-	}
-	response, err := conn.DescribeCdnDomainDetail(args)
+	domain, err := DescribeDomainDetail(d.Id(), meta)
 	if err != nil {
-		return fmt.Errorf("DescribeCdnDomainDetail got an error: %#v", err)
+		return fmt.Errorf("DescribeDomainDetail got an error: %#v", err)
 	}
-
-	domain := response.GetDomainDetailModel
 	d.Set("domain_name", domain.DomainName)
 	d.Set("sources", domain.Sources.Source)
 	d.Set("cdn_type", domain.CdnType)
@@ -405,10 +463,13 @@ func resourceAlicloudCdnDomainRead(d *schema.ResourceData, meta interface{}) err
 	describeConfigArgs := cdn.DomainConfigRequest{
 		DomainName: d.Id(),
 	}
-	resp, err := conn.DescribeDomainConfigs(describeConfigArgs)
+	raw, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return cdnClient.DescribeDomainConfigs(describeConfigArgs)
+	})
 	if err != nil {
 		return fmt.Errorf("DescribeDomainConfigs got an error: %#v", err)
 	}
+	resp, _ := raw.(cdn.DomainConfigResponse)
 	configs := resp.DomainConfigs
 
 	queryStringConfig := configs.IgnoreQueryStringConfig
@@ -419,6 +480,26 @@ func resourceAlicloudCdnDomainRead(d *schema.ResourceData, meta interface{}) err
 			"hash_key_args": strings.Split(queryStringConfig.HashKeyArgs, ","),
 		}
 		d.Set("parameter_filter_config", config)
+	}
+
+	if _, ok := d.GetOk("certificate_config"); ok {
+		ov := d.Get("certificate_config")
+		oldConfig := ov.([]interface{})
+		config := make([]map[string]interface{}, 1)
+		serverCertificateStatus := domain.ServerCertificateStatus
+		if serverCertificateStatus == "" {
+			serverCertificateStatus = "off"
+		}
+		config[0] = map[string]interface{}{
+			"server_certificate":        domain.ServerCertificate,
+			"server_certificate_status": serverCertificateStatus,
+		}
+		if oldConfig != nil && len(oldConfig) > 0 {
+			val := oldConfig[0].(map[string]interface{})
+			config[0]["private_key"] = val["private_key"]
+		}
+
+		d.Set("certificate_config", config)
 	}
 
 	errorPageConfig := configs.ErrorPageConfig
@@ -499,13 +580,16 @@ func resourceAlicloudCdnDomainRead(d *schema.ResourceData, meta interface{}) err
 }
 
 func resourceAlicloudCdnDomainDelete(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).cdnconn
+	client := meta.(*connectivity.AliyunClient)
 
 	args := cdn.DescribeDomainRequest{
 		DomainName: d.Id(),
 	}
 	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		if _, err := conn.DeleteCdnDomain(args); err != nil {
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.DeleteCdnDomain(args)
+		})
+		if err != nil {
 			if IsExceptedError(err, ServiceBusy) {
 				return resource.RetryableError(fmt.Errorf("The specified Domain is configuring, please retry later."))
 			}
@@ -515,15 +599,18 @@ func resourceAlicloudCdnDomainDelete(d *schema.ResourceData, meta interface{}) e
 	})
 }
 
-func enableConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
+func enableConfigUpdate(client *connectivity.AliyunClient, d *schema.ResourceData) error {
 	type configFunc func(req cdn.ConfigRequest) (cdn.CdnCommonResponse, error)
 
-	relation := map[string]configFunc{
-		"optimize_enable":      conn.SetOptimizeConfig,
-		"range_enable":         conn.SetRangeConfig,
-		"page_compress_enable": conn.SetPageCompressConfig,
-		"video_seek_enable":    conn.SetVideoSeekConfig,
-	}
+	raw, _ := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return map[string]configFunc{
+			"optimize_enable":      cdnClient.SetOptimizeConfig,
+			"range_enable":         cdnClient.SetRangeConfig,
+			"page_compress_enable": cdnClient.SetPageCompressConfig,
+			"video_seek_enable":    cdnClient.SetVideoSeekConfig,
+		}, nil
+	})
+	relation, _ := raw.(map[string]configFunc)
 
 	for key, fn := range relation {
 		if d.HasChange(key) {
@@ -540,13 +627,16 @@ func enableConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 	return nil
 }
 
-func queryStringConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
+func queryStringConfigUpdate(client *connectivity.AliyunClient, d *schema.ResourceData) error {
 	valSet := d.Get("parameter_filter_config").(*schema.Set)
 	args := cdn.QueryStringConfigRequest{DomainName: d.Id()}
 
 	if valSet == nil || valSet.Len() == 0 {
 		args.Enable = "off"
-		if _, err := conn.SetIgnoreQueryStringConfig(args); err != nil {
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetIgnoreQueryStringConfig(args)
+		})
+		if err != nil {
 			return err
 		}
 		return nil
@@ -559,19 +649,25 @@ func queryStringConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error 
 		hashKeyArgs := expandStringList(v.([]interface{}))
 		args.HashKeyArgs = strings.Join(hashKeyArgs, ",")
 	}
-	if _, err := conn.SetIgnoreQueryStringConfig(args); err != nil {
+	_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return cdnClient.SetIgnoreQueryStringConfig(args)
+	})
+	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func page404ConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
+func page404ConfigUpdate(client *connectivity.AliyunClient, d *schema.ResourceData) error {
 	valSet := d.Get("page_404_config").(*schema.Set)
 	args := cdn.ErrorPageConfigRequest{DomainName: d.Id()}
 
 	if valSet == nil || valSet.Len() == 0 {
 		args.PageType = "default"
-		if _, err := conn.SetErrorPageConfig(args); err != nil {
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetErrorPageConfig(args)
+		})
+		if err != nil {
 			return err
 		}
 		return nil
@@ -595,20 +691,26 @@ func page404ConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 		return fmt.Errorf("If 'page_type' value is 'other', you must set the value of 'custom_page_url'.")
 	}
 
-	if _, err := conn.SetErrorPageConfig(args); err != nil {
+	_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return cdnClient.SetErrorPageConfig(args)
+	})
+	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func referConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
+func referConfigUpdate(client *connectivity.AliyunClient, d *schema.ResourceData) error {
 	valSet := d.Get("refer_config").(*schema.Set)
 	args := cdn.ReferConfigRequest{DomainName: d.Id()}
 
 	if valSet == nil || valSet.Len() == 0 {
 		args.ReferType = "block"
 		args.AllowEmpty = "on"
-		if _, err := conn.SetRefererConfig(args); err != nil {
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetRefererConfig(args)
+		})
+		if err != nil {
 			return err
 		}
 		return nil
@@ -622,20 +724,26 @@ func referConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 		referList := expandStringList(v.([]interface{}))
 		args.ReferList = strings.Join(referList, ",")
 	}
-	if _, err := conn.SetRefererConfig(args); err != nil {
+	_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return cdnClient.SetRefererConfig(args)
+	})
+	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func authConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
+func authConfigUpdate(client *connectivity.AliyunClient, d *schema.ResourceData) error {
 	ov, nv := d.GetChange("auth_config")
 	oldConfig, newConfig := ov.(*schema.Set), nv.(*schema.Set)
 	args := cdn.ReqAuthConfigRequest{DomainName: d.Id()}
 
 	if newConfig == nil || newConfig.Len() == 0 {
 		args.AuthType = "no_auth"
-		if _, err := conn.SetReqAuthConfig(args); err != nil {
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetReqAuthConfig(args)
+		})
+		if err != nil {
 			return err
 		}
 		return nil
@@ -672,13 +780,75 @@ func authConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 		}
 	}
 
-	if _, err := conn.SetReqAuthConfig(args); err != nil {
+	_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return cdnClient.SetReqAuthConfig(args)
+	})
+	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func httpHeaderConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
+func certificateConfigUpdate(client *connectivity.AliyunClient, d *schema.ResourceData) error {
+	ov, nv := d.GetChange("certificate_config")
+	oldConfig, newConfig := ov.([]interface{}), nv.([]interface{})
+	args := cdn.CertificateRequest{
+		DomainName: d.Id(),
+	}
+
+	if newConfig == nil || len(newConfig) == 0 {
+		args.ServerCertificateStatus = "off"
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetDomainServerCertificate(args)
+		})
+		if err != nil {
+			return err
+		}
+		d.SetPartial("certificate_config")
+		return nil
+	}
+
+	val := newConfig[0].(map[string]interface{})
+	args.ServerCertificateStatus = val["server_certificate_status"].(string)
+
+	serverCertificate, okServerCertificate := val["server_certificate"]
+	privateKey, okPrivateKey := val["private_key"]
+	if okServerCertificate {
+		args.ServerCertificate = serverCertificate.(string)
+	}
+	if okPrivateKey {
+		args.PrivateKey = privateKey.(string)
+	}
+
+	if args.ServerCertificateStatus == "off" {
+		if oldConfig == nil || len(oldConfig) == 0 {
+			if okServerCertificate || okPrivateKey {
+				return fmt.Errorf("If 'server_certificate_status' value is 'off', you can not set the value of 'server_certificate' and 'private_key'.")
+			}
+		}
+	} else {
+		if !okServerCertificate || !okPrivateKey {
+			return fmt.Errorf("If 'server_certificate_status' value is 'on', you must set 'server_certificate', and 'private_key'")
+		}
+	}
+
+	_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return cdnClient.SetDomainServerCertificate(args)
+	})
+	if err != nil {
+		return err
+	}
+	d.SetPartial("certificate_config")
+	if okServerCertificate && args.ServerCertificateStatus != "off" {
+		err := WaitForServerCertificate(client, d.Id(), args.ServerCertificate, 360)
+		if err != nil {
+			return fmt.Errorf("Timeout waiting for Cdn server certificate. Error: %#v", err)
+		}
+	}
+	return nil
+}
+
+func httpHeaderConfigUpdate(client *connectivity.AliyunClient, d *schema.ResourceData) error {
 	ov, nv := d.GetChange("http_header_config")
 	oldConfigs := ov.(*schema.Set).List()
 	newConfigs := nv.(*schema.Set).List()
@@ -689,7 +859,10 @@ func httpHeaderConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 			DomainName: d.Id(),
 			ConfigID:   configId,
 		}
-		if _, err := conn.DeleteHttpHeaderConfig(args); err != nil {
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.DeleteHttpHeaderConfig(args)
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -704,7 +877,9 @@ func httpHeaderConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 			HeaderKey:   v.(map[string]interface{})["header_key"].(string),
 			HeaderValue: v.(map[string]interface{})["header_value"].(string),
 		}
-		_, err := conn.SetHttpHeaderConfig(args)
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetHttpHeaderConfig(args)
+		})
 		if err != nil {
 			return fmt.Errorf("SetHttpHeaderConfig got an error: %#v", err)
 		}
@@ -713,7 +888,7 @@ func httpHeaderConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 	return nil
 }
 
-func cacheConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
+func cacheConfigUpdate(client *connectivity.AliyunClient, d *schema.ResourceData) error {
 	ov, nv := d.GetChange("cache_config")
 	oldConfigs := ov.(*schema.Set).List()
 	newConfigs := nv.(*schema.Set).List()
@@ -726,7 +901,10 @@ func cacheConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 			ConfigID:   configId,
 			CacheType:  val["cache_type"].(string),
 		}
-		if _, err := conn.DeleteCacheExpiredConfig(args); err != nil {
+		_, err := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.DeleteCacheExpiredConfig(args)
+		})
+		if err != nil {
 			return fmt.Errorf("DeleteCacheExpiredConfig got an error: %#v", err)
 		}
 	}
@@ -743,7 +921,7 @@ func cacheConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 			TTL:          strconv.Itoa(val["ttl"].(int)),
 			Weight:       strconv.Itoa(val["weight"].(int)),
 		}
-		if err := setCacheExpiredConfig(args, val["cache_type"].(string), conn); err != nil {
+		if err := setCacheExpiredConfig(args, val["cache_type"].(string), client); err != nil {
 			return err
 		}
 	}
@@ -751,11 +929,80 @@ func cacheConfigUpdate(conn *cdn.CdnClient, d *schema.ResourceData) error {
 	return nil
 }
 
-func setCacheExpiredConfig(req cdn.CacheConfigRequest, cacheType string, conn *cdn.CdnClient) (err error) {
+func setCacheExpiredConfig(req cdn.CacheConfigRequest, cacheType string, client *connectivity.AliyunClient) (err error) {
 	if cacheType == "suffix" {
-		_, err = conn.SetFileCacheExpiredConfig(req)
+		_, err = client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetFileCacheExpiredConfig(req)
+		})
 	} else {
-		_, err = conn.SetPathCacheExpiredConfig(req)
+		_, err = client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+			return cdnClient.SetPathCacheExpiredConfig(req)
+		})
 	}
 	return
+}
+
+func describeDomainDetailClient(Id string, client *connectivity.AliyunClient) (domain cdn.DomainDetail, err error) {
+	args := cdn.DescribeDomainRequest{
+		DomainName: Id,
+	}
+	raw, e := client.WithCdnClient(func(cdnClient *cdn.CdnClient) (interface{}, error) {
+		return cdnClient.DescribeCdnDomainDetail(args)
+	})
+	if e != nil {
+		err = fmt.Errorf("DescribeCdnDomainDetail got an error: %#v", e)
+		return
+	}
+	response, _ := raw.(cdn.DomainResponse)
+	domain = response.GetDomainDetailModel
+	return
+}
+
+func DescribeDomainDetail(Id string, meta interface{}) (domain cdn.DomainDetail, err error) {
+	client := meta.(*connectivity.AliyunClient)
+	return describeDomainDetailClient(Id, client)
+}
+
+func WaitForDomainStatus(Id string, status Status, timeout int, meta interface{}) error {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+
+	for {
+		domain, err := DescribeDomainDetail(Id, meta)
+		if err != nil {
+			return err
+		}
+		if domain.DomainStatus == string(status) {
+			break
+		}
+		timeout = timeout - DefaultIntervalShort
+		if timeout <= 0 {
+			return GetTimeErrorFromString(GetTimeoutMessage("Domain", string(status)))
+		}
+		time.Sleep(DefaultIntervalShort * time.Second)
+	}
+	return nil
+}
+
+func WaitForServerCertificate(client *connectivity.AliyunClient, Id string, serverCertificate string, timeout int) error {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+
+	for {
+		domain, err := describeDomainDetailClient(Id, client)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(domain.ServerCertificate) == strings.TrimSpace(serverCertificate) {
+			break
+		}
+		timeout = timeout - DefaultIntervalShort
+		if timeout <= 0 {
+			return GetTimeErrorFromString(GetTimeoutMessage("ServerCertificate", string(serverCertificate)))
+		}
+		time.Sleep(DefaultIntervalShort * time.Second)
+	}
+	return nil
 }

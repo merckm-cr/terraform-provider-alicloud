@@ -66,13 +66,13 @@ var SupportedDiskCategory = map[DiskCategory]DiskCategory{
 	DiskCloudSSD:        DiskCloudSSD,
 	DiskCloudEfficiency: DiskCloudEfficiency,
 	DiskEphemeralSSD:    DiskEphemeralSSD,
+	DiskCloudESSD:       DiskCloudESSD,
 	DiskCloud:           DiskCloud,
 }
 
 const AllPortRange = "-1/-1"
 
 const (
-	KubernetesImageId      = "centos_7"
 	KubernetesMasterNumber = 3
 )
 
@@ -98,6 +98,7 @@ const (
 	DiskAll             = DiskCategory("all") //Default
 	DiskCloud           = DiskCategory("cloud")
 	DiskEphemeralSSD    = DiskCategory("ephemeral_ssd")
+	DiskCloudESSD       = DiskCategory("cloud_essd")
 	DiskCloudEfficiency = DiskCategory("cloud_efficiency")
 	DiskCloudSSD        = DiskCategory("cloud_ssd")
 )
@@ -110,4 +111,11 @@ const (
 	ImageOwnerOthers      = ImageOwnerAlias("others")
 	ImageOwnerMarketplace = ImageOwnerAlias("marketplace")
 	ImageOwnerDefault     = ImageOwnerAlias("") //Return the values for system, self, and others
+)
+
+type SecurityEnhancementStrategy string
+
+const (
+	ActiveSecurityEnhancementStrategy   = SecurityEnhancementStrategy("Active")
+	DeactiveSecurityEnhancementStrategy = SecurityEnhancementStrategy("Deactive")
 )

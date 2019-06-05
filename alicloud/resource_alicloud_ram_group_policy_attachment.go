@@ -1,12 +1,11 @@
 package alicloud
 
 import (
-	"fmt"
-	"time"
+	"strings"
 
-	"github.com/denverdino/aliyungo/ram"
-	"github.com/hashicorp/terraform/helper/resource"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudRamGroupPolicyAtatchment() *schema.Resource {
@@ -16,19 +15,17 @@ func resourceAlicloudRamGroupPolicyAtatchment() *schema.Resource {
 		Delete: resourceAlicloudRamGroupPolicyAttachmentDelete,
 
 		Schema: map[string]*schema.Schema{
-			"group_name": &schema.Schema{
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     true,
-				ValidateFunc: validateRamGroupName,
+			"group_name": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
 			},
-			"policy_name": &schema.Schema{
-				Type:         schema.TypeString,
-				Required:     true,
-				ForceNew:     true,
-				ValidateFunc: validateRamPolicyName,
+			"policy_name": {
+				Type:     schema.TypeString,
+				Required: true,
+				ForceNew: true,
 			},
-			"policy_type": &schema.Schema{
+			"policy_type": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
@@ -39,85 +36,80 @@ func resourceAlicloudRamGroupPolicyAtatchment() *schema.Resource {
 }
 
 func resourceAlicloudRamGroupPolicyAttachmentCreate(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ramconn
+	client := meta.(*connectivity.AliyunClient)
 
-	args := ram.AttachPolicyToGroupRequest{
-		PolicyRequest: ram.PolicyRequest{
-			PolicyName: d.Get("policy_name").(string),
-			PolicyType: ram.Type(d.Get("policy_type").(string)),
-		},
-		GroupName: d.Get("group_name").(string),
-	}
+	request := ram.CreateAttachPolicyToGroupRequest()
+	request.PolicyType = d.Get("policy_type").(string)
+	request.PolicyName = d.Get("policy_name").(string)
+	request.GroupName = d.Get("group_name").(string)
 
-	if _, err := conn.AttachPolicyToGroup(args); err != nil {
-		return fmt.Errorf("AttachPolicyToGroup got an error: %#v", err)
+	raw, err := client.WithRamClient(func(ramClient *ram.Client) (interface{}, error) {
+		return ramClient.AttachPolicyToGroup(request)
+	})
+	if err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, "alicloud_ram_group_policy_attachment", request.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
-	d.SetId("group" + args.PolicyName + string(args.PolicyType) + args.GroupName)
+	addDebug(request.GetActionName(), raw)
+	d.SetId(strings.Join([]string{"group", request.PolicyName, string(request.PolicyType), request.GroupName}, COLON_SEPARATED))
 
 	return resourceAlicloudRamGroupPolicyAttachmentRead(d, meta)
 }
 
 func resourceAlicloudRamGroupPolicyAttachmentRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ramconn
-
-	args := ram.GroupQueryRequest{
-		GroupName: d.Get("group_name").(string),
+	client := meta.(*connectivity.AliyunClient)
+	ramService := RamService{client}
+	id := strings.Join([]string{"group", d.Get("policy_name").(string), d.Get("policy_type").(string), d.Get("group_name").(string)}, COLON_SEPARATED)
+	if d.Id() != id {
+		d.SetId(id)
 	}
-
-	response, err := conn.ListPoliciesForGroup(args)
+	object, err := ramService.DescribeRamGroupPolicyAttachment(d.Id())
 	if err != nil {
-		if RamEntityNotExist(err) {
+		if NotFoundError(err) {
 			d.SetId("")
+			return nil
 		}
-		return fmt.Errorf("Get list policies for group got an error: %#v", err)
+		return WrapError(err)
 	}
 
-	if len(response.Policies.Policy) > 0 {
-		for _, v := range response.Policies.Policy {
-			if v.PolicyName == d.Get("policy_name").(string) && v.PolicyType == d.Get("policy_type").(string) {
-				d.Set("group_name", args.GroupName)
-				d.Set("policy_name", v.PolicyName)
-				d.Set("policy_type", v.PolicyType)
-				return nil
-			}
-		}
+	parts, err := ParseResourceId(id, 4)
+	if err != nil {
+		return WrapError(err)
 	}
-
-	d.SetId("")
+	d.Set("group_name", parts[3])
+	d.Set("policy_name", object.PolicyName)
+	d.Set("policy_type", object.PolicyType)
 	return nil
 }
 
 func resourceAlicloudRamGroupPolicyAttachmentDelete(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ramconn
+	client := meta.(*connectivity.AliyunClient)
+	ramService := RamService{client}
 
-	args := ram.AttachPolicyToGroupRequest{
-		PolicyRequest: ram.PolicyRequest{
-			PolicyName: d.Get("policy_name").(string),
-			PolicyType: ram.Type(d.Get("policy_type").(string)),
-		},
-		GroupName: d.Get("group_name").(string),
+	id := strings.Join([]string{"group", d.Get("policy_name").(string), d.Get("policy_type").(string), d.Get("group_name").(string)}, COLON_SEPARATED)
+	if d.Id() != id {
+		d.SetId(id)
 	}
+	parts, err := ParseResourceId(id, 4)
+	if err != nil {
+		return WrapError(err)
+	}
+	request := ram.CreateDetachPolicyFromGroupRequest()
+	request.PolicyName = parts[1]
+	request.PolicyType = parts[2]
+	request.GroupName = parts[3]
 
-	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		if _, err := conn.DetachPolicyFromGroup(args); err != nil {
-			if RamEntityNotExist(err) {
-				return nil
-			}
-			return resource.NonRetryableError(fmt.Errorf("Error deleting group policy attachment: %#v", err))
-		}
-
-		response, err := conn.ListPoliciesForGroup(ram.GroupQueryRequest{GroupName: args.GroupName})
-		if err != nil {
-			if RamEntityNotExist(err) {
-				return nil
-			}
-
-			return resource.NonRetryableError(err)
-		}
-
-		if len(response.Policies.Policy) < 1 {
+	raw, err := client.WithRamClient(func(ramClient *ram.Client) (interface{}, error) {
+		return ramClient.DetachPolicyFromGroup(request)
+	})
+	if err != nil {
+		if RamEntityNotExist(err) {
 			return nil
 		}
-		return resource.RetryableError(fmt.Errorf("Error deleting group policy attachment - trying again while it is deleted."))
-	})
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
+	}
+
+	addDebug(request.GetActionName(), raw)
+
+	return WrapError(ramService.WaitForRamGroupPolicyAttachment(d.Id(), Deleted, DefaultTimeout))
+
 }

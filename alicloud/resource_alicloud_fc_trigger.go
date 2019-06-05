@@ -10,6 +10,7 @@ import (
 	"github.com/aliyun/fc-go-sdk"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudFCTrigger() *schema.Resource {
@@ -23,17 +24,17 @@ func resourceAlicloudFCTrigger() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"service": &schema.Schema{
+			"service": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"function": &schema.Schema{
+			"function": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"name": &schema.Schema{
+			"name": {
 				Type:          schema.TypeString,
 				Optional:      true,
 				Computed:      true,
@@ -41,7 +42,7 @@ func resourceAlicloudFCTrigger() *schema.Resource {
 				ConflictsWith: []string{"name_prefix"},
 				ValidateFunc:  validateStringLengthInRange(1, 128),
 			},
-			"name_prefix": &schema.Schema{
+			"name_prefix": {
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
@@ -56,33 +57,47 @@ func resourceAlicloudFCTrigger() *schema.Resource {
 				},
 			},
 
-			"role": &schema.Schema{
+			"role": {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
 
-			"source_arn": &schema.Schema{
+			"source_arn": {
 				Type:     schema.TypeString,
 				Optional: true,
-				//ForceNew: true,
+				ForceNew: true,
 			},
 
-			"config": &schema.Schema{
+			"config": {
 				Type:     schema.TypeString,
-				Required: true,
+				Optional: true,
 				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
-					equal, _ := CompareJsonTemplateAreEquivalent(old, new)
-					return equal
+					// The read config is json rawMessage and it does not contains space and enter.
+					if d.Get("type").(string) == string(fc.TRIGGER_TYPE_MNS_TOPIC) {
+						return true
+					}
+					return old == removeSpaceAndEnter(new)
 				},
 				ValidateFunc: validateJsonString,
 			},
-
-			"type": &schema.Schema{
+			//Modifying config is not supported when type is mns_topic
+			"config_mns": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+					// The read config is json rawMessage and it does not contains space and enter.
+					return old == removeSpaceAndEnter(new)
+				},
+				ValidateFunc:  validateJsonString,
+				ConflictsWith: []string{"config"},
+			},
+			"type": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 				ValidateFunc: validateAllowedStringValue([]string{string(fc.TRIGGER_TYPE_HTTP), string(fc.TRIGGER_TYPE_LOG),
-					string(fc.TRIGGER_TYPE_OSS), string(fc.TRIGGER_TYPE_TIMER)}),
+					string(fc.TRIGGER_TYPE_OSS), string(fc.TRIGGER_TYPE_TIMER), string(fc.TRIGGER_TYPE_MNS_TOPIC)}),
 			},
 
 			"last_modified": {
@@ -94,11 +109,7 @@ func resourceAlicloudFCTrigger() *schema.Resource {
 }
 
 func resourceAlicloudFCTriggerCreate(d *schema.ResourceData, meta interface{}) error {
-	if err := requireAccountId(meta); err != nil {
-		return err
-	}
-	client := meta.(*AliyunClient)
-	conn := client.fcconn
+	client := meta.(*connectivity.AliyunClient)
 
 	serviceName := d.Get("service").(string)
 	fcName := d.Get("function").(string)
@@ -112,73 +123,97 @@ func resourceAlicloudFCTriggerCreate(d *schema.ResourceData, meta interface{}) e
 	}
 
 	var config interface{}
-	if err := json.Unmarshal([]byte(d.Get("config").(string)), &config); err != nil {
-		return fmt.Errorf("Unmarshalling config got an error: %#v.", err)
+
+	if d.Get("type").(string) == string(fc.TRIGGER_TYPE_MNS_TOPIC) {
+		if v, ok := d.GetOk("config_mns"); ok {
+			if err := json.Unmarshal([]byte(v.(string)), &config); err != nil {
+				return WrapError(err)
+			}
+		}
+	} else {
+		if v, ok := d.GetOk("config"); ok {
+			if err := json.Unmarshal([]byte(v.(string)), &config); err != nil {
+				return WrapError(err)
+			}
+		}
 	}
 
 	object := fc.TriggerCreateObject{
 		TriggerName:    StringPointer(name),
-		SourceARN:      StringPointer(d.Get("source_arn").(string)),
 		TriggerType:    StringPointer(d.Get("type").(string)),
 		InvocationRole: StringPointer(d.Get("role").(string)),
 		TriggerConfig:  config,
 	}
-	input := &fc.CreateTriggerInput{
+	if v, ok := d.GetOk("source_arn"); ok && v.(string) != "" {
+		object.SourceARN = StringPointer(v.(string))
+	}
+	request := &fc.CreateTriggerInput{
 		ServiceName:         StringPointer(serviceName),
 		FunctionName:        StringPointer(fcName),
 		TriggerCreateObject: object,
 	}
-	var trigger *fc.CreateTriggerOutput
+	var response *fc.CreateTriggerOutput
 	if err := resource.Retry(2*time.Minute, func() *resource.RetryError {
-		out, err := conn.CreateTrigger(input)
+		raw, err := client.WithFcClient(func(fcClient *fc.Client) (interface{}, error) {
+			return fcClient.CreateTrigger(request)
+		})
 		if err != nil {
 			if IsExceptedErrors(err, []string{AccessDenied}) {
-				return resource.RetryableError(fmt.Errorf("Error creating function compute service got an error: %#v", err))
+				return resource.RetryableError(err)
 			}
-			return resource.NonRetryableError(fmt.Errorf("Error creating function compute trigger got an error: %#v", err))
+			return resource.NonRetryableError(err)
 		}
-		trigger = out
+		addDebug("CreateTrigger", raw)
+		response, _ = raw.(*fc.CreateTriggerOutput)
 		return nil
 
 	}); err != nil {
-		return err
+		return WrapErrorf(err, DefaultErrorMsg, "alicloud_fc_trigger", "CreateTrigger", FcGoSdk)
 	}
 
-	if trigger == nil {
-		return fmt.Errorf("Creating function compute trigger got a empty response: %#v.", trigger)
-	}
-
-	d.SetId(fmt.Sprintf("%s%s%s%s%s", serviceName, COLON_SEPARATED, fcName, COLON_SEPARATED, *trigger.TriggerName))
+	d.SetId(fmt.Sprintf("%s%s%s%s%s", serviceName, COLON_SEPARATED, fcName, COLON_SEPARATED, *response.TriggerName))
 
 	return resourceAlicloudFCTriggerRead(d, meta)
 }
 
 func resourceAlicloudFCTriggerRead(d *schema.ResourceData, meta interface{}) error {
-	if err := requireAccountId(meta); err != nil {
-		return err
-	}
+	client := meta.(*connectivity.AliyunClient)
+	fcService := FcService{client}
 
-	client := meta.(*AliyunClient)
-
-	split := strings.Split(d.Id(), COLON_SEPARATED)
-	if len(split) < 3 {
-		return fmt.Errorf("Invalid resource ID %s. Please check it and try again.", d.Id())
+	parts, err := ParseResourceId(d.Id(), 3)
+	if err != nil {
+		return WrapError(err)
 	}
-	trigger, err := client.DescribeFcTrigger(split[0], split[1], split[2])
+	trigger, err := fcService.DescribeFcTrigger(d.Id())
 	if err != nil {
 		if NotFoundError(err) {
 			d.SetId("")
 			return nil
 		}
-		return fmt.Errorf("DescribeFCTrigger %s got an error: %#v", d.Id(), err)
+		return WrapError(err)
 	}
 
-	d.Set("service", split[0])
-	d.Set("function", split[1])
+	d.Set("service", parts[0])
+	d.Set("function", parts[1])
 	d.Set("name", trigger.TriggerName)
 	d.Set("role", trigger.InvocationRole)
 	d.Set("source_arn", trigger.SourceARN)
-	d.Set("config", trigger.TriggerConfig)
+
+	data, err := trigger.RawTriggerConfig.MarshalJSON()
+	if err != nil {
+		return WrapError(err)
+	}
+
+	if d.Get("type").(string) == string(fc.TRIGGER_TYPE_MNS_TOPIC) {
+		if err := d.Set("config_mns", string(data)); err != nil {
+			return WrapError(err)
+		}
+	} else {
+		if err := d.Set("config", string(data)); err != nil {
+			return WrapError(err)
+		}
+	}
+
 	d.Set("type", trigger.TriggerType)
 	d.Set("last_modified", trigger.LastModifiedTime)
 
@@ -186,74 +221,64 @@ func resourceAlicloudFCTriggerRead(d *schema.ResourceData, meta interface{}) err
 }
 
 func resourceAlicloudFCTriggerUpdate(d *schema.ResourceData, meta interface{}) error {
-	if err := requireAccountId(meta); err != nil {
-		return err
-	}
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
 
-	d.Partial(true)
 	updateInput := &fc.UpdateTriggerInput{}
 
 	if d.HasChange("role") {
 		updateInput.InvocationRole = StringPointer(d.Get("role").(string))
-		d.SetPartial("role")
 	}
 	if d.HasChange("config") {
 		var config interface{}
 		if err := json.Unmarshal([]byte(d.Get("config").(string)), &config); err != nil {
-			return fmt.Errorf("When updating, unmarshalling config got an error: %#v.", err)
+			return WrapError(err)
 		}
 		updateInput.TriggerConfig = config
-		d.SetPartial("config")
 	}
 
 	if updateInput != nil {
 		split := strings.Split(d.Id(), COLON_SEPARATED)
 		if len(split) < 3 {
-			return fmt.Errorf("Invalid resource ID %s. Please check it and try again.", d.Id())
+			return WrapError(Error("Invalid resource ID %s. Please check it and try again.", d.Id()))
 		}
 		updateInput.ServiceName = StringPointer(split[0])
 		updateInput.FunctionName = StringPointer(split[1])
 		updateInput.TriggerName = StringPointer(split[2])
 
-		if _, err := client.fcconn.UpdateTrigger(updateInput); err != nil {
-			return fmt.Errorf("UpdateTrigger %s got an error: %#v.", d.Id(), err)
+		raw, err := client.WithFcClient(func(fcClient *fc.Client) (interface{}, error) {
+			return fcClient.UpdateTrigger(updateInput)
+		})
+		if err != nil {
+			return WrapErrorf(err, DefaultErrorMsg, d.Id(), "UpdateTrigger", FcGoSdk)
 		}
+		addDebug("UpdateTrigger", raw)
 	}
 
-	d.Partial(false)
 	return resourceAlicloudFCTriggerRead(d, meta)
 }
 
 func resourceAlicloudFCTriggerDelete(d *schema.ResourceData, meta interface{}) error {
-	if err := requireAccountId(meta); err != nil {
-		return err
-	}
-	client := meta.(*AliyunClient)
-	split := strings.Split(d.Id(), COLON_SEPARATED)
-	if len(split) < 3 {
-		return fmt.Errorf("Invalid resource ID %s. Please check it and try again.", d.Id())
+	client := meta.(*connectivity.AliyunClient)
+	fcService := FcService{client}
+
+	parts, err := ParseResourceId(d.Id(), 3)
+	if err != nil {
+		return WrapError(err)
 	}
 
-	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		if _, err := client.fcconn.DeleteTrigger(&fc.DeleteTriggerInput{
-			ServiceName:  StringPointer(split[0]),
-			FunctionName: StringPointer(split[1]),
-			TriggerName:  StringPointer(split[2]),
-		}); err != nil {
-			if IsExceptedErrors(err, []string{ServiceNotFound, FunctionNotFound, TriggerNotFound}) {
-				return nil
-			}
-			return resource.NonRetryableError(fmt.Errorf("Deleting trigger got an error: %#v.", err))
-		}
-
-		if _, err := client.DescribeFcTrigger(split[0], split[1], split[2]); err != nil {
-			if NotFoundError(err) {
-				return nil
-			}
-			return resource.RetryableError(fmt.Errorf("While deleting function trigger, getting trigger %s got an error: %#v.", d.Id(), err))
-		}
-		return nil
+	raw, err := client.WithFcClient(func(fcClient *fc.Client) (interface{}, error) {
+		return fcClient.DeleteTrigger(&fc.DeleteTriggerInput{
+			ServiceName:  StringPointer(parts[0]),
+			FunctionName: StringPointer(parts[1]),
+			TriggerName:  StringPointer(parts[2]),
+		})
 	})
-
+	if err != nil {
+		if IsExceptedErrors(err, []string{ServiceNotFound, FunctionNotFound, TriggerNotFound}) {
+			return nil
+		}
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), "DeleteTrigger", FcGoSdk)
+	}
+	addDebug("DeleteTrigger", raw)
+	return WrapError(fcService.WaitForFcTrigger(d.Id(), Deleted, DefaultTimeoutMedium))
 }

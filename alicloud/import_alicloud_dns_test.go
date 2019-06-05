@@ -3,6 +3,7 @@ package alicloud
 import (
 	"testing"
 
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 )
 
@@ -14,11 +15,11 @@ func TestAccAlicloudDnsDomain_importBasic(t *testing.T) {
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckDnsDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccDnsConfig,
+			{
+				Config: testAccDnsConfig_group_id(acctest.RandIntRange(1000, 9999), defaultRegionToTest),
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,

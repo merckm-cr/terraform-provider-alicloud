@@ -1,22 +1,26 @@
 package alicloud
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/xml"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/user"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
-
 	"time"
 
+	"gopkg.in/yaml.v2"
+
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
-	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/denverdino/aliyungo/common"
-	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/google/uuid"
+	"github.com/mitchellh/go-homedir"
 )
 
 type InstanceNetWork string
@@ -45,8 +49,10 @@ const (
 type NetworkType string
 
 const (
-	Classic = NetworkType("Classic")
-	Vpc     = NetworkType("Vpc")
+	Classic         = NetworkType("Classic")
+	Vpc             = NetworkType("Vpc")
+	ClassicInternet = NetworkType("classic_internet")
+	ClassicIntranet = NetworkType("classic_intranet")
 )
 
 type TimeType string
@@ -57,6 +63,13 @@ const (
 	Week  = TimeType("Week")
 	Month = TimeType("Month")
 	Year  = TimeType("Year")
+)
+
+type IpVersion string
+
+const (
+	IPV4 = IpVersion("ipv4")
+	IPV6 = IpVersion("ipv6")
 )
 
 type Status string
@@ -72,6 +85,10 @@ const (
 	Starting    = Status("Starting")
 	Stopping    = Status("Stopping")
 	Stopped     = Status("Stopped")
+	Normal      = Status("Normal")
+	Changing    = Status("Changing")
+	Online      = Status("online")
+	Configuring = Status("configuring")
 
 	Associating   = Status("Associating")
 	Unassociating = Status("Unassociating")
@@ -87,6 +104,20 @@ const (
 	InService      = Status("InService")
 	Removing       = Status("Removing")
 	DisabledStatus = Status("Disabled")
+
+	Init            = Status("Init")
+	Provisioning    = Status("Provisioning")
+	Updating        = Status("Updating")
+	FinancialLocked = Status("FinancialLocked")
+
+	PUBLISHED   = Status("Published")
+	NOPUBLISHED = Status("NonPublished")
+
+	Deleted = Status("Deleted")
+	Null    = Status("Null")
+
+	Enable = Status("Enable")
+	BINDED = Status("BINDED")
 )
 
 type IPType string
@@ -100,11 +131,16 @@ const (
 type ResourceType string
 
 const (
-	ResourceTypeInstance = ResourceType("Instance")
-	ResourceTypeDisk     = ResourceType("Disk")
-	ResourceTypeVSwitch  = ResourceType("VSwitch")
-	ResourceTypeRds      = ResourceType("Rds")
-	IoOptimized          = ResourceType("IoOptimized")
+	ResourceTypeInstance      = ResourceType("Instance")
+	ResourceTypeDisk          = ResourceType("Disk")
+	ResourceTypeVSwitch       = ResourceType("VSwitch")
+	ResourceTypeRds           = ResourceType("Rds")
+	IoOptimized               = ResourceType("IoOptimized")
+	ResourceTypeRkv           = ResourceType("KVStore")
+	ResourceTypeFC            = ResourceType("FunctionCompute")
+	ResourceTypeElasticsearch = ResourceType("Elasticsearch")
+	ResourceTypeSlb           = ResourceType("Slb")
+	ResourceTypeMongoDB       = ResourceType("MongoDB")
 )
 
 type InternetChargeType string
@@ -112,6 +148,33 @@ type InternetChargeType string
 const (
 	PayByBandwidth = InternetChargeType("PayByBandwidth")
 	PayByTraffic   = InternetChargeType("PayByTraffic")
+	PayBy95        = InternetChargeType("PayBy95")
+)
+
+type InstanceSeries string
+
+const (
+	drds4c8g   = InstanceSeries("drds.sn1.4c8g")
+	drds8c16g  = InstanceSeries("drds.sn1.8c16g")
+	drds16c32g = InstanceSeries("drds.sn1.16c32g")
+	drds32c64g = InstanceSeries("drds.sn1.32c64g")
+)
+
+type AccountSite string
+
+const (
+	DomesticSite = AccountSite("Domestic")
+	IntlSite     = AccountSite("International")
+)
+
+const (
+	SnapshotCreatingInProcessing = Status("progressing")
+	SnapshotCreatingAccomplished = Status("accomplished")
+	SnapshotCreatingFailed       = Status("failed")
+
+	SnapshotPolicyCreating  = Status("Creating")
+	SnapshotPolicyAvaliable = Status("avaliable")
+	SnapshotPolicyNormal    = Status("Normal")
 )
 
 // timeout for common product, ecs e.g.
@@ -121,6 +184,8 @@ const DefaultTimeoutMedium = 500
 
 // timeout for long time progerss product, rds e.g.
 const DefaultLongTimeout = 1000
+
+const DefaultIntervalMini = 2
 
 const DefaultIntervalShort = 5
 
@@ -132,22 +197,8 @@ const (
 	PageSizeSmall  = 10
 	PageSizeMedium = 20
 	PageSizeLarge  = 50
+	PageSizeXLarge = 100
 )
-
-func getRegion(d *schema.ResourceData, meta interface{}) common.Region {
-	return meta.(*AliyunClient).Region
-}
-
-func getRegionId(d *schema.ResourceData, meta interface{}) string {
-	return meta.(*AliyunClient).RegionId
-}
-
-func requireAccountId(meta interface{}) error {
-	if meta.(*AliyunClient).AccountId == "" {
-		return fmt.Errorf("Provider field 'account_id' is required for this resource.")
-	}
-	return nil
-}
 
 // Protocol represents network protocol
 type Protocol string
@@ -192,7 +243,7 @@ const COMMA_SEPARATED = ","
 
 const COLON_SEPARATED = ":"
 
-const DOT_SEPARATED = "."
+const SLASH_SEPARATED = "/"
 
 const LOCAL_HOST_IP = "127.0.0.1"
 
@@ -216,6 +267,14 @@ func flattenStringList(list []string) []interface{} {
 	return vs
 }
 
+func expandIntList(configured []interface{}) []int {
+	vs := make([]int, 0, len(configured))
+	for _, v := range configured {
+		vs = append(vs, v.(int))
+	}
+	return vs
+}
+
 // Convert the result for an array and returns a Json string
 func convertListToJsonString(configured []interface{}) string {
 	if len(configured) < 1 {
@@ -232,6 +291,15 @@ func convertListToJsonString(configured []interface{}) string {
 	return result
 }
 
+func convertJsonStringToList(configured string) ([]interface{}, error) {
+	result := make([]interface{}, 0)
+	if err := json.Unmarshal([]byte(configured), &result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 func StringPointer(s string) *string {
 	return &s
 }
@@ -245,6 +313,7 @@ func Int32Pointer(i int32) *int32 {
 }
 
 const ServerSideEncryptionAes256 = "AES256"
+const ServerSideEncryptionKMS = "KMS"
 
 type OptimizedType string
 
@@ -256,10 +325,19 @@ const (
 type TagResourceType string
 
 const (
-	TagResourceImage    = TagResourceType("image")
-	TagResourceInstance = TagResourceType("instance")
-	TagResourceSnapshot = TagResourceType("snapshot")
-	TagResourceDisk     = TagResourceType("disk")
+	TagResourceImage         = TagResourceType("image")
+	TagResourceInstance      = TagResourceType("instance")
+	TagResourceSnapshot      = TagResourceType("snapshot")
+	TagResourceDisk          = TagResourceType("disk")
+	TagResourceSecurityGroup = TagResourceType("securitygroup")
+	TagResourceEni           = TagResourceType("eni")
+)
+
+type KubernetesNodeType string
+
+const (
+	KubernetesNodeMaster = ResourceType("Master")
+	KubernetesNodeWorker = ResourceType("Worker")
 )
 
 func getPagination(pageNumber, pageSize int) (pagination common.Pagination) {
@@ -269,25 +347,6 @@ func getPagination(pageNumber, pageSize int) (pagination common.Pagination) {
 }
 
 const CharityPageUrl = "http://promotion.alicdn.com/help/oss/error.html"
-
-func (client *AliyunClient) JudgeRegionValidation(key, region string) error {
-	resp, err := client.ecsconn.DescribeRegions(ecs.CreateDescribeRegionsRequest())
-	if err != nil {
-		return fmt.Errorf("DescribeRegions got an error: %#v", err)
-	}
-	if resp == nil || len(resp.Regions.Region) < 1 {
-		return GetNotFoundErrorFromString("There is no any available region.")
-	}
-
-	var rs []string
-	for _, v := range resp.Regions.Region {
-		if v.RegionId == region {
-			return nil
-		}
-		rs = append(rs, v.RegionId)
-	}
-	return fmt.Errorf("'%s' is invalid. Expected on %v.", key, strings.Join(rs, ", "))
-}
 
 func userDataHashSum(user_data string) string {
 	// Check whether the user_data is not Base64 encoded.
@@ -300,114 +359,12 @@ func userDataHashSum(user_data string) string {
 	return string(v)
 }
 
-const DBConnectionSuffix = ".mysql.rds.aliyuncs.com"
-
 // Remove useless blank in the string.
 func Trim(v string) string {
 	if len(v) < 1 {
 		return v
 	}
 	return strings.Trim(v, " ")
-}
-
-// Load endpoints from endpoints.xml or environment variables to meet specified application scenario, like private cloud.
-type ServiceCode string
-
-const (
-	ECSCode     = ServiceCode("ECS")
-	ESSCode     = ServiceCode("ESS")
-	RAMCode     = ServiceCode("RAM")
-	VPCCode     = ServiceCode("VPC")
-	SLBCode     = ServiceCode("SLB")
-	RDSCode     = ServiceCode("RDS")
-	OSSCode     = ServiceCode("OSS")
-	CONTAINCode = ServiceCode("CS")
-	DOMAINCode  = ServiceCode("DOMAIN")
-	CDNCode     = ServiceCode("CDN")
-	CMSCode     = ServiceCode("CMS")
-	KMSCode     = ServiceCode("KMS")
-	OTSCode     = ServiceCode("OTS")
-	LOGCode     = ServiceCode("LOG")
-	FCCode      = ServiceCode("FC")
-)
-
-//xml
-type Endpoints struct {
-	Endpoint []Endpoint `xml:"Endpoint"`
-}
-
-type Endpoint struct {
-	Name      string    `xml:"name,attr"`
-	RegionIds RegionIds `xml:"RegionIds"`
-	Products  Products  `xml:"Products"`
-}
-
-type RegionIds struct {
-	RegionId string `xml:"RegionId"`
-}
-
-type Products struct {
-	Product []Product `xml:"Product"`
-}
-
-type Product struct {
-	ProductName string `xml:"ProductName"`
-	DomainName  string `xml:"DomainName"`
-}
-
-func LoadEndpoint(region string, serviceCode ServiceCode) string {
-	endpoint := strings.TrimSpace(os.Getenv(fmt.Sprintf("%s_ENDPOINT", string(serviceCode))))
-	if endpoint != "" {
-		return endpoint
-	}
-
-	// Load current path endpoint file endpoints.xml, if failed, it will load from environment variables TF_ENDPOINT_PATH
-	data, err := ioutil.ReadFile("./endpoints.xml")
-	if err != nil || len(data) <= 0 {
-		d, e := ioutil.ReadFile(os.Getenv("TF_ENDPOINT_PATH"))
-		if e != nil {
-			return ""
-		}
-		data = d
-	}
-	var endpoints Endpoints
-	err = xml.Unmarshal(data, &endpoints)
-	if err != nil {
-		return ""
-	}
-	for _, endpoint := range endpoints.Endpoint {
-		if endpoint.RegionIds.RegionId == string(region) {
-			for _, product := range endpoint.Products.Product {
-				if strings.ToLower(product.ProductName) == strings.ToLower(string(serviceCode)) {
-					return product.DomainName
-				}
-			}
-		}
-	}
-
-	return ""
-}
-
-const ApiVersion20140526 = "2014-05-26"
-const ApiVersion20140828 = "2014-08-28"
-const ApiVersion20160815 = "2016-08-15"
-
-type CommonRequestDomain string
-
-const (
-	ECSDomain = CommonRequestDomain("ecs.aliyuncs.com")
-	ESSDomain = CommonRequestDomain("ess.aliyuncs.com")
-)
-
-func CommonRequestInit(region string, code ServiceCode, domain CommonRequestDomain) *requests.CommonRequest {
-	request := requests.NewCommonRequest()
-	request.Version = ApiVersion20140526
-	request.Domain = string(domain)
-	d := LoadEndpoint(region, code)
-	if d != "" {
-		request.Domain = d
-	}
-	return request
 }
 
 func ConvertIntegerToInt(value requests.Integer) (v int, err error) {
@@ -471,13 +428,15 @@ type Catcher struct {
 	RetryWaitSeconds int
 }
 
-var ClientErrorCatcher = Catcher{AliyunGoClientFailure, 10, 3}
-var ServiceBusyCatcher = Catcher{"ServiceUnavailable", 10, 3}
+var ClientErrorCatcher = Catcher{AliyunGoClientFailure, 10, 5}
+var ServiceBusyCatcher = Catcher{"ServiceUnavailable", 10, 5}
+var ThrottlingCatcher = Catcher{Throttling, 10, 10}
 
 func NewInvoker() Invoker {
 	i := Invoker{}
 	i.AddCatcher(ClientErrorCatcher)
 	i.AddCatcher(ServiceBusyCatcher)
+	i.AddCatcher(ThrottlingCatcher)
 	return i
 }
 
@@ -493,7 +452,7 @@ func (a *Invoker) Run(f func() error) error {
 	}
 
 	for _, catcher := range a.catchers {
-		if strings.Contains(err.Error(), catcher.Reason) {
+		if IsExceptedErrors(err, []string{catcher.Reason}) {
 			catcher.RetryCount--
 
 			if catcher.RetryCount <= 0 {
@@ -506,3 +465,151 @@ func (a *Invoker) Run(f func() error) error {
 	}
 	return err
 }
+
+func buildClientToken(action string) string {
+	token := strings.TrimSpace(fmt.Sprintf("TF-%s-%d-%s", action, time.Now().Unix(), strings.Trim(uuid.New().String(), "-")))
+	if len(token) > 64 {
+		token = token[0:64]
+	}
+	return token
+}
+
+func getNextpageNumber(number requests.Integer) (requests.Integer, error) {
+	page, err := strconv.Atoi(string(number))
+	if err != nil {
+		return "", err
+	}
+	return requests.NewInteger(page + 1), nil
+}
+
+func terraformToAPI(field string) string {
+	var result string
+	for _, v := range strings.Split(field, "_") {
+		if len(v) > 0 {
+			result = fmt.Sprintf("%s%s%s", result, strings.ToUpper(string(v[0])), v[1:])
+		}
+	}
+	return result
+}
+
+func compareJsonTemplateAreEquivalent(tem1, tem2 string) (bool, error) {
+	var obj1 interface{}
+	err := json.Unmarshal([]byte(tem1), &obj1)
+	if err != nil {
+		return false, err
+	}
+
+	canonicalJson1, _ := json.Marshal(obj1)
+
+	var obj2 interface{}
+	err = json.Unmarshal([]byte(tem2), &obj2)
+	if err != nil {
+		return false, err
+	}
+
+	canonicalJson2, _ := json.Marshal(obj2)
+
+	equal := bytes.Compare(canonicalJson1, canonicalJson2) == 0
+	if !equal {
+		log.Printf("[DEBUG] Canonical template are not equal.\nFirst: %s\nSecond: %s\n",
+			canonicalJson1, canonicalJson2)
+	}
+	return equal, nil
+}
+
+func compareYamlTemplateAreEquivalent(tem1, tem2 string) (bool, error) {
+	var obj1 interface{}
+	err := yaml.Unmarshal([]byte(tem1), &obj1)
+	if err != nil {
+		return false, err
+	}
+
+	canonicalYaml1, _ := yaml.Marshal(obj1)
+
+	var obj2 interface{}
+	err = yaml.Unmarshal([]byte(tem2), &obj2)
+	if err != nil {
+		return false, err
+	}
+
+	canonicalYaml2, _ := yaml.Marshal(obj2)
+
+	equal := bytes.Compare(canonicalYaml1, canonicalYaml2) == 0
+	if !equal {
+		log.Printf("[DEBUG] Canonical template are not equal.\nFirst: %s\nSecond: %s\n",
+			canonicalYaml1, canonicalYaml2)
+	}
+	return equal, nil
+}
+
+// loadFileContent returns contents of a file in a given path
+func loadFileContent(v string) ([]byte, error) {
+	filename, err := homedir.Expand(v)
+	if err != nil {
+		return nil, err
+	}
+	fileContent, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	return fileContent, nil
+}
+
+func debugOn() bool {
+	for _, part := range strings.Split(os.Getenv("DEBUG"), ",") {
+		if strings.TrimSpace(part) == "terraform" {
+			return true
+		}
+	}
+	return false
+}
+
+func addDebug(action, content interface{}) {
+	if debugOn() {
+		trace := "[DEBUG TRACE]:\n"
+		for skip := 1; skip < 5; skip++ {
+			_, filepath, line, _ := runtime.Caller(skip)
+			trace += fmt.Sprintf("%s:%d\n", filepath, line)
+		}
+
+		fmt.Printf(DefaultDebugMsg, action, content, trace)
+		log.Printf(DefaultDebugMsg, action, content, trace)
+	}
+}
+
+// Return a ComplexError which including extra error message, error occurred file and path
+func GetFunc(level int) string {
+	pc, _, _, ok := runtime.Caller(level)
+	if !ok {
+		log.Printf("[ERROR] runtime.Caller error in GetFuncName.")
+		return ""
+	}
+	return strings.TrimPrefix(filepath.Ext(runtime.FuncForPC(pc).Name()), ".")
+}
+
+func ParseResourceId(id string, length int) (parts []string, err error) {
+	parts = strings.Split(id, ":")
+
+	if len(parts) != length {
+		err = WrapError(fmt.Errorf("Invalid Resource Id %s. Expected parts' length %d, got %d", id, length, len(parts)))
+	}
+	return parts, err
+}
+
+func GetCenChildInstanceType(id string) (c string, e error) {
+	if strings.HasPrefix(id, "vpc") {
+		return ChildInstanceTypeVpc, nil
+	} else if strings.HasPrefix(id, "vbr") {
+		return ChildInstanceTypeVbr, nil
+	} else {
+		return c, fmt.Errorf("CEN child instance ID invalid. Now, it only supports VPC or VBR instance.")
+	}
+}
+
+type EventRwType string
+
+const (
+	EventRead  = EventRwType("Read")
+	EventWrite = EventRwType("Write")
+	EventAll   = EventRwType("All")
+)

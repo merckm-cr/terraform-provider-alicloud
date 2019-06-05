@@ -76,22 +76,25 @@ func (client *Client) DescribeLimitationWithCallback(request *DescribeLimitation
 // DescribeLimitationRequest is the request struct for api DescribeLimitation
 type DescribeLimitationRequest struct {
 	*requests.RpcRequest
-	OwnerId              requests.Integer `position:"Query" name:"OwnerId"`
 	ResourceOwnerAccount string           `position:"Query" name:"ResourceOwnerAccount"`
+	OwnerId              requests.Integer `position:"Query" name:"OwnerId"`
 }
 
 // DescribeLimitationResponse is the response struct for api DescribeLimitation
 type DescribeLimitationResponse struct {
 	*responses.BaseResponse
-	MaxNumberOfScalingGroups         int `json:"MaxNumberOfScalingGroups" xml:"MaxNumberOfScalingGroups"`
-	MaxNumberOfScalingConfigurations int `json:"MaxNumberOfScalingConfigurations" xml:"MaxNumberOfScalingConfigurations"`
-	MaxNumberOfScalingRules          int `json:"MaxNumberOfScalingRules" xml:"MaxNumberOfScalingRules"`
-	MaxNumberOfScheduledTasks        int `json:"MaxNumberOfScheduledTasks" xml:"MaxNumberOfScheduledTasks"`
-	MaxNumberOfScalingInstances      int `json:"MaxNumberOfScalingInstances" xml:"MaxNumberOfScalingInstances"`
-	MaxNumberOfDBInstances           int `json:"MaxNumberOfDBInstances" xml:"MaxNumberOfDBInstances"`
-	MaxNumberOfLoadBalancers         int `json:"MaxNumberOfLoadBalancers" xml:"MaxNumberOfLoadBalancers"`
-	MaxNumberOfMinSize               int `json:"MaxNumberOfMinSize" xml:"MaxNumberOfMinSize"`
-	MaxNumberOfMaxSize               int `json:"MaxNumberOfMaxSize" xml:"MaxNumberOfMaxSize"`
+	MaxNumberOfScalingGroups              int `json:"MaxNumberOfScalingGroups" xml:"MaxNumberOfScalingGroups"`
+	MaxNumberOfScalingConfigurations      int `json:"MaxNumberOfScalingConfigurations" xml:"MaxNumberOfScalingConfigurations"`
+	MaxNumberOfScalingRules               int `json:"MaxNumberOfScalingRules" xml:"MaxNumberOfScalingRules"`
+	MaxNumberOfScheduledTasks             int `json:"MaxNumberOfScheduledTasks" xml:"MaxNumberOfScheduledTasks"`
+	MaxNumberOfScalingInstances           int `json:"MaxNumberOfScalingInstances" xml:"MaxNumberOfScalingInstances"`
+	MaxNumberOfDBInstances                int `json:"MaxNumberOfDBInstances" xml:"MaxNumberOfDBInstances"`
+	MaxNumberOfLoadBalancers              int `json:"MaxNumberOfLoadBalancers" xml:"MaxNumberOfLoadBalancers"`
+	MaxNumberOfMinSize                    int `json:"MaxNumberOfMinSize" xml:"MaxNumberOfMinSize"`
+	MaxNumberOfMaxSize                    int `json:"MaxNumberOfMaxSize" xml:"MaxNumberOfMaxSize"`
+	MaxNumberOfVServerGroups              int `json:"MaxNumberOfVServerGroups" xml:"MaxNumberOfVServerGroups"`
+	MaxNumberOfLifecycleHooks             int `json:"MaxNumberOfLifecycleHooks" xml:"MaxNumberOfLifecycleHooks"`
+	MaxNumberOfNotificationConfigurations int `json:"MaxNumberOfNotificationConfigurations" xml:"MaxNumberOfNotificationConfigurations"`
 }
 
 // CreateDescribeLimitationRequest creates a request to invoke DescribeLimitation API

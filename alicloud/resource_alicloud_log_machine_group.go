@@ -6,9 +6,10 @@ import (
 
 	"strings"
 
-	"github.com/aliyun/aliyun-log-go-sdk"
+	sls "github.com/aliyun/aliyun-log-go-sdk"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudLogMachineGroup() *schema.Resource {
@@ -22,17 +23,17 @@ func resourceAlicloudLogMachineGroup() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"project": &schema.Schema{
+			"project": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"identify_type": &schema.Schema{
+			"identify_type": {
 				Type:     schema.TypeString,
 				Optional: true,
 				Default:  sls.MachineIDTypeIP,
@@ -41,11 +42,11 @@ func resourceAlicloudLogMachineGroup() *schema.Resource {
 					string(sls.MachineIDTypeUserDefined),
 				}),
 			},
-			"topic": &schema.Schema{
+			"topic": {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-			"identify_list": &schema.Schema{
+			"identify_list": {
 				Type:     schema.TypeSet,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 				Required: true,
@@ -56,16 +57,23 @@ func resourceAlicloudLogMachineGroup() *schema.Resource {
 }
 
 func resourceAlicloudLogMachineGroupCreate(d *schema.ResourceData, meta interface{}) error {
-
-	if err := meta.(*AliyunClient).logconn.CreateMachineGroup(d.Get("project").(string), &sls.MachineGroup{
-		Name:          d.Get("name").(string),
-		MachineIDType: d.Get("identify_type").(string),
-		MachineIDList: expandStringList(d.Get("identify_list").(*schema.Set).List()),
-		Attribute: sls.MachinGroupAttribute{
-			TopicName: d.Get("topic").(string),
-		},
+	client := meta.(*connectivity.AliyunClient)
+	invoker := NewInvoker()
+	invoker.AddCatcher(SlsClientTimeoutCatcher)
+	if err := invoker.Run(func() error {
+		_, err := client.WithLogClient(func(slsClient *sls.Client) (interface{}, error) {
+			return nil, slsClient.CreateMachineGroup(d.Get("project").(string), &sls.MachineGroup{
+				Name:          d.Get("name").(string),
+				MachineIDType: d.Get("identify_type").(string),
+				MachineIDList: expandStringList(d.Get("identify_list").(*schema.Set).List()),
+				Attribute: sls.MachinGroupAttribute{
+					TopicName: d.Get("topic").(string),
+				},
+			})
+		})
+		return err
 	}); err != nil {
-		return fmt.Errorf("CreateLogMachineGroup got an error: %#v.", err)
+		return fmt.Errorf("CreateLogMachineGroup got an error: %s.", err)
 	}
 
 	d.SetId(fmt.Sprintf("%s%s%s", d.Get("project").(string), COLON_SEPARATED, d.Get("name").(string)))
@@ -74,9 +82,11 @@ func resourceAlicloudLogMachineGroupCreate(d *schema.ResourceData, meta interfac
 }
 
 func resourceAlicloudLogMachineGroupRead(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*connectivity.AliyunClient)
+	logService := LogService{client}
 	split := strings.Split(d.Id(), COLON_SEPARATED)
 
-	group, err := meta.(*AliyunClient).DescribeLogMachineGroup(split[0], split[1])
+	group, err := logService.DescribeLogMachineGroup(split[0], split[1])
 	if err != nil {
 		if NotFoundError(err) {
 			d.SetId("")
@@ -95,50 +105,49 @@ func resourceAlicloudLogMachineGroupRead(d *schema.ResourceData, meta interface{
 }
 
 func resourceAlicloudLogMachineGroupUpdate(d *schema.ResourceData, meta interface{}) error {
-	split := strings.Split(d.Id(), COLON_SEPARATED)
-	d.Partial(true)
+	if d.HasChange("identify_type") || d.HasChange("identify_list") || d.HasChange("topic") {
+		split := strings.Split(d.Id(), COLON_SEPARATED)
 
-	update := false
-	if d.HasChange("identify_type") {
-		update = true
-		d.SetPartial("identify_type")
-	}
-	if d.HasChange("identify_list") {
-		update = true
-		d.SetPartial("identify_list")
-	}
-	if d.HasChange("topic") {
-		update = true
-		d.SetPartial("topic")
-	}
-
-	if update {
-		if err := meta.(*AliyunClient).logconn.UpdateMachineGroup(split[0], &sls.MachineGroup{
-			Name:          split[1],
-			MachineIDType: d.Get("identify_type").(string),
-			MachineIDList: expandStringList(d.Get("identify_list").(*schema.Set).List()),
-			Attribute: sls.MachinGroupAttribute{
-				TopicName: d.Get("topic").(string),
-			},
+		client := meta.(*connectivity.AliyunClient)
+		invoker := NewInvoker()
+		invoker.AddCatcher(SlsClientTimeoutCatcher)
+		if err := invoker.Run(func() error {
+			_, err := client.WithLogClient(func(slsClient *sls.Client) (interface{}, error) {
+				return nil, slsClient.UpdateMachineGroup(split[0], &sls.MachineGroup{
+					Name:          split[1],
+					MachineIDType: d.Get("identify_type").(string),
+					MachineIDList: expandStringList(d.Get("identify_list").(*schema.Set).List()),
+					Attribute: sls.MachinGroupAttribute{
+						TopicName: d.Get("topic").(string),
+					},
+				})
+			})
+			return err
 		}); err != nil {
 			return fmt.Errorf("UpdateLogMachineGroup %s got an error: %#v.", split[1], err)
 		}
 	}
-	d.Partial(false)
 
 	return resourceAlicloudLogMachineGroupRead(d, meta)
 }
 
 func resourceAlicloudLogMachineGroupDelete(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	logService := LogService{client}
 	split := strings.Split(d.Id(), COLON_SEPARATED)
 
 	return resource.Retry(3*time.Minute, func() *resource.RetryError {
-		if err := client.logconn.DeleteMachineGroup(split[0], split[1]); err != nil {
-			return resource.NonRetryableError(fmt.Errorf("Deleting log machine group %s got an error: %#v", split[1], err))
+		_, err := client.WithLogClient(func(slsClient *sls.Client) (interface{}, error) {
+			return nil, slsClient.DeleteMachineGroup(split[0], split[1])
+		})
+		if err != nil {
+			if IsExceptedErrors(err, []string{LogClientTimeout}) {
+				return resource.RetryableError(fmt.Errorf("Timeout. DeleteMachineGroup %s got an error: %#v", split[1], err))
+			}
+			return resource.NonRetryableError(fmt.Errorf("DeleteMachineGroup %s got an error: %#v", split[1], err))
 		}
 
-		if _, err := client.DescribeLogMachineGroup(split[0], split[1]); err != nil {
+		if _, err := logService.DescribeLogMachineGroup(split[0], split[1]); err != nil {
 			if NotFoundError(err) {
 				return nil
 			}

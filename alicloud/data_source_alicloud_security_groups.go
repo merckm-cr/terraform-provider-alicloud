@@ -1,18 +1,18 @@
 package alicloud
 
 import (
-	"fmt"
-	"log"
 	"regexp"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 type SecurityGroup struct {
 	Attributes   ecs.DescribeSecurityGroupAttributeResponse
 	CreationTime string
+	Tags         ecs.TagsInDescribeSecurityGroups
 }
 
 func dataSourceAlicloudSecurityGroups() *schema.Resource {
@@ -34,7 +34,17 @@ func dataSourceAlicloudSecurityGroups() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-
+			"tags": tagsSchema(),
+			"ids": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"names": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			// Computed values
 			"groups": {
 				Type:     schema.TypeList,
@@ -65,6 +75,7 @@ func dataSourceAlicloudSecurityGroups() *schema.Resource {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
+						"tags": tagsSchema(),
 					},
 				},
 			},
@@ -73,64 +84,82 @@ func dataSourceAlicloudSecurityGroups() *schema.Resource {
 }
 
 func dataSourceAlicloudSecurityGroupsRead(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
-	conn := client.ecsconn
+	client := meta.(*connectivity.AliyunClient)
+	ecsService := EcsService{client}
 
-	args := ecs.CreateDescribeSecurityGroupsRequest()
-	args.VpcId = d.Get("vpc_id").(string)
-	args.PageNumber = requests.NewInteger(1)
-	args.PageSize = requests.NewInteger(PageSizeLarge)
+	request := ecs.CreateDescribeSecurityGroupsRequest()
+	request.VpcId = d.Get("vpc_id").(string)
+	request.PageNumber = requests.NewInteger(1)
+	request.PageSize = requests.NewInteger(PageSizeLarge)
 
 	var sg []SecurityGroup
-
 	var nameRegex *regexp.Regexp
 	if v, ok := d.GetOk("name_regex"); ok {
 		if r, err := regexp.Compile(v.(string)); err == nil {
 			nameRegex = r
 		}
 	}
+	if v, ok := d.GetOk("tags"); ok {
+		var tags []ecs.DescribeSecurityGroupsTag
 
-	for {
-		resp, err := conn.DescribeSecurityGroups(args)
-		if err != nil {
-			return fmt.Errorf("DescribeSecurityGroups: %#v", err)
+		for key, value := range v.(map[string]interface{}) {
+			tags = append(tags, ecs.DescribeSecurityGroupsTag{
+				Key:   key,
+				Value: value.(string),
+			})
 		}
-		if resp == nil || len(resp.SecurityGroups.SecurityGroup) < 1 {
+		request.Tag = &tags
+	}
+	for {
+		raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+			return ecsClient.DescribeSecurityGroups(request)
+		})
+		if err != nil {
+			return WrapErrorf(err, DataDefaultErrorMsg, "security_groups", request.GetActionName(), AlibabaCloudSdkGoERROR)
+		}
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*ecs.DescribeSecurityGroupsResponse)
+		if len(response.SecurityGroups.SecurityGroup) < 1 {
 			break
 		}
 
-		for _, item := range resp.SecurityGroups.SecurityGroup {
+		for _, item := range response.SecurityGroups.SecurityGroup {
 			if nameRegex != nil {
 				if !nameRegex.MatchString(item.SecurityGroupName) {
 					continue
 				}
 			}
 
-			attr, err := client.DescribeSecurityGroupAttribute(item.SecurityGroupId)
+			attr, err := ecsService.DescribeSecurityGroup(item.SecurityGroupId)
 			if err != nil {
-				return fmt.Errorf("DescribeSecurityGroupAttribute: %#v", err)
+				return WrapError(err)
 			}
 
 			sg = append(sg,
 				SecurityGroup{
 					Attributes:   attr,
 					CreationTime: item.CreationTime,
+					Tags:         item.Tags,
 				},
 			)
 		}
 
-		if len(resp.SecurityGroups.SecurityGroup) < PageSizeLarge {
+		if len(response.SecurityGroups.SecurityGroup) < PageSizeLarge {
 			break
 		}
 
-		args.PageNumber = args.PageNumber + requests.NewInteger(1)
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			request.PageNumber = page
+		}
 	}
-
 	return securityGroupsDescription(d, sg)
 }
 
 func securityGroupsDescription(d *schema.ResourceData, sg []SecurityGroup) error {
 	var ids []string
+	var names []string
 	var s []map[string]interface{}
 
 	for _, item := range sg {
@@ -141,18 +170,24 @@ func securityGroupsDescription(d *schema.ResourceData, sg []SecurityGroup) error
 			"vpc_id":        item.Attributes.VpcId,
 			"inner_access":  item.Attributes.InnerAccessPolicy == string(GroupInnerAccept),
 			"creation_time": item.CreationTime,
+			"tags":          tagsToMap(item.Tags.Tag),
 		}
 
-		log.Printf("alicloud_security_groups - adding security group mapping: %v", mapping)
 		ids = append(ids, string(item.Attributes.SecurityGroupId))
+		names = append(names, item.Attributes.SecurityGroupName)
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("groups", s); err != nil {
-		return err
+		return WrapError(err)
 	}
-
+	if err := d.Set("names", names); err != nil {
+		return WrapError(err)
+	}
+	if err := d.Set("ids", ids); err != nil {
+		return WrapError(err)
+	}
 	// create a json file in current directory and write data source to it
 	if output, ok := d.GetOk("output_file"); ok && output.(string) != "" {
 		writeToFile(output.(string), s)

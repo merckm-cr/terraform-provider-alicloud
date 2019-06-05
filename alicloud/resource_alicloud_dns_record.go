@@ -1,13 +1,14 @@
 package alicloud
 
 import (
-	"fmt"
+	"strconv"
 	"time"
 
-	"github.com/denverdino/aliyungo/common"
-	"github.com/denverdino/aliyungo/dns"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/alidns"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudDnsRecord() *schema.Resource {
@@ -21,7 +22,7 @@ func resourceAlicloudDnsRecord() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
@@ -47,7 +48,6 @@ func resourceAlicloudDnsRecord() *schema.Resource {
 			"priority": {
 				Type:             schema.TypeInt,
 				Optional:         true,
-				ValidateFunc:     validateDomainRecordPriority,
 				DiffSuppressFunc: dnsPriorityDiffSuppressFunc,
 			},
 			"routing": {
@@ -69,140 +69,126 @@ func resourceAlicloudDnsRecord() *schema.Resource {
 }
 
 func resourceAlicloudDnsRecordCreate(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).dnsconn
+	client := meta.(*connectivity.AliyunClient)
+	request := alidns.CreateAddDomainRecordRequest()
+	request.DomainName = d.Get("name").(string)
+	request.RR = d.Get("host_record").(string)
+	request.Type = d.Get("type").(string)
+	request.Value = d.Get("value").(string)
+	request.TTL = requests.NewInteger(d.Get("ttl").(int))
 
-	args := &dns.AddDomainRecordArgs{
-		DomainName: d.Get("name").(string),
-		RR:         d.Get("host_record").(string),
-		Type:       d.Get("type").(string),
-		Value:      d.Get("value").(string),
-		Priority:   int32(d.Get("priority").(int)),
+	if v, ok := d.GetOk("priority"); !ok && request.Type == "MX" {
+		return WrapError(Error("'priority': required field when 'type' is MX."))
+	} else if ok {
+		request.Priority = requests.Integer(strconv.Itoa(v.(int)))
 	}
 
-	if _, ok := d.GetOk("priority"); !ok && args.Type == dns.MXRecord {
-		return fmt.Errorf("'priority': required field when 'type' is MX.")
+	if v, ok := d.GetOk("routing"); ok {
+		routing := v.(string)
+		if routing != "default" && request.Type == "FORWORD_URL" {
+			return WrapError(Error("The ForwordURLRecord only support default line."))
+		}
+		request.Line = routing
 	}
 
-	if v, ok := d.GetOk("routing"); ok && v != "default" && args.Type == dns.ForwordURLRecord {
-		return fmt.Errorf("The ForwordURLRecord only support default line.")
+	if err := resource.Retry(3*time.Minute, func() *resource.RetryError {
+		raw, err := client.WithDnsClient(func(dnsClient *alidns.Client) (interface{}, error) {
+			return dnsClient.AddDomainRecord(request)
+		})
+		if err != nil {
+			if IsExceptedError(err, DnsInternalError) {
+				return resource.RetryableError(err)
+			}
+			return resource.NonRetryableError(err)
+		}
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*alidns.AddDomainRecordResponse)
+		d.SetId(response.RecordId)
+		return nil
+	}); err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, "alicloud_dns_record", request.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
 
-	response, err := conn.AddDomainRecord(args)
-	if err != nil {
-		return fmt.Errorf("AddDomainRecord got a error: %#v", err)
-	}
-	d.SetId(response.RecordId)
-	return resourceAlicloudDnsRecordUpdate(d, meta)
+	return resourceAlicloudDnsRecordRead(d, meta)
 }
 
 func resourceAlicloudDnsRecordUpdate(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).dnsconn
+	client := meta.(*connectivity.AliyunClient)
 
-	d.Partial(true)
-	attributeUpdate := false
-	args := &dns.UpdateDomainRecordArgs{
-		RecordId: d.Id(),
-		RR:       d.Get("host_record").(string),
-		Type:     d.Get("type").(string),
-		Value:    d.Get("value").(string),
+	request := alidns.CreateUpdateDomainRecordRequest()
+	request.RecordId = d.Id()
+	request.RR = d.Get("host_record").(string)
+	request.Type = d.Get("type").(string)
+	if request.Type == MXRecord {
+		request.Priority = requests.NewInteger(d.Get("priority").(int))
 	}
+	request.TTL = requests.NewInteger(d.Get("ttl").(int))
+	request.Line = d.Get("routing").(string)
 
-	if !d.IsNewResource() {
-		requiredParams := []string{"host_record", "type", "value"}
-		for _, v := range requiredParams {
-			if d.HasChange(v) {
-				d.SetPartial(v)
-				attributeUpdate = true
-			}
-		}
-	}
-	if d.HasChange("priority") && !d.IsNewResource() {
-		d.SetPartial("priority")
-		args.Priority = int32(d.Get("priority").(int))
-		attributeUpdate = true
-	}
+	request.Value = d.Get("value").(string)
 
-	if d.HasChange("ttl") && !d.IsNewResource() {
-		d.SetPartial("ttl")
-		args.TTL = int32(d.Get("ttl").(int))
-		attributeUpdate = true
+	raw, err := client.WithDnsClient(func(dnsClient *alidns.Client) (interface{}, error) {
+		return dnsClient.UpdateDomainRecord(request)
+	})
+	if err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
-
-	if d.HasChange("routing") && !d.IsNewResource() {
-		d.SetPartial("routing")
-		args.Line = d.Get("routing").(string)
-		attributeUpdate = true
-	}
-
-	if attributeUpdate {
-		if _, err := conn.UpdateDomainRecord(args); err != nil {
-			return fmt.Errorf("UpdateDomainRecord got an error: %#v", err)
-		}
-	}
-
-	d.Partial(false)
+	addDebug(request.GetActionName(), raw)
 
 	return resourceAlicloudDnsRecordRead(d, meta)
 }
 
 func resourceAlicloudDnsRecordRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).dnsconn
+	client := meta.(*connectivity.AliyunClient)
 
-	args := &dns.DescribeDomainRecordInfoNewArgs{
-		RecordId: d.Id(),
-	}
-	response, err := conn.DescribeDomainRecordInfoNew(args)
+	dnsService := &DnsService{client: client}
+	object, err := dnsService.DescribeDnsRecord(d.Id())
 	if err != nil {
 		if NotFoundError(err) {
 			d.SetId("")
 			return nil
 		}
-		return err
+		return WrapError(err)
 	}
-
-	record := response.RecordTypeNew
-	d.Set("ttl", record.TTL)
-	d.Set("priority", record.Priority)
-	d.Set("name", record.DomainName)
-	d.Set("host_record", record.RR)
-	d.Set("type", record.Type)
-	d.Set("value", record.Value)
-	d.Set("routing", record.Line)
-	d.Set("status", record.Status)
-	d.Set("locked", record.Locked)
+	d.Set("ttl", object.TTL)
+	d.Set("priority", object.Priority)
+	d.Set("name", object.DomainName)
+	d.Set("host_record", object.RR)
+	d.Set("type", object.Type)
+	d.Set("value", object.Value)
+	d.Set("routing", object.Line)
+	d.Set("status", object.Status)
+	d.Set("locked", object.Locked)
 
 	return nil
 }
 
 func resourceAlicloudDnsRecordDelete(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).dnsconn
-	args := &dns.DeleteDomainRecordArgs{
-		RecordId: d.Id(),
-	}
+	client := meta.(*connectivity.AliyunClient)
+	dnsService := &DnsService{client: client}
+	request := alidns.CreateDeleteDomainRecordRequest()
+	request.RecordId = d.Id()
 	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		_, err := conn.DeleteDomainRecord(args)
-		if err != nil {
-			e, _ := err.(*common.Error)
-			if e.ErrorResponse.Code == RecordForbiddenDNSChange {
-				return resource.RetryableError(fmt.Errorf("Operation forbidden because DNS is changing - trying again after change complete."))
-			}
-			return resource.NonRetryableError(fmt.Errorf("Error deleting domain record %s: %#v", d.Id(), err))
-		}
-
-		response, err := conn.DescribeDomainRecordInfoNew(&dns.DescribeDomainRecordInfoNewArgs{
-			RecordId: d.Id(),
+		raw, err := client.WithDnsClient(func(dnsClient *alidns.Client) (interface{}, error) {
+			return dnsClient.DeleteDomainRecord(request)
 		})
 		if err != nil {
-			if NotFoundError(err) || IsExceptedError(err, DomainRecordNotBelongToUser) {
+			if IsExceptedErrors(err, []string{DomainRecordNotBelongToUser}) {
 				return nil
 			}
-			return resource.NonRetryableError(fmt.Errorf("Describe domain record got an error: %#v.", err))
+			if IsExceptedErrors(err, []string{RecordForbiddenDNSChange, DnsInternalError}) {
+				return resource.RetryableError(WrapErrorf(err, DefaultTimeoutMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR))
+			}
+			return resource.NonRetryableError(WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR))
 		}
-
-		if response == nil {
-			return nil
+		addDebug(request.GetActionName(), raw)
+		_, err = dnsService.DescribeDnsRecord(d.Id())
+		if err != nil {
+			if NotFoundError(err) {
+				return nil
+			}
+			return resource.NonRetryableError(WrapError(err))
 		}
-
-		return nil
+		return resource.RetryableError(WrapErrorf(err, DefaultTimeoutMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR))
 	})
 }

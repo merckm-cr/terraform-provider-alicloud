@@ -9,14 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v2"
+
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/denverdino/aliyungo/cdn"
 	"github.com/denverdino/aliyungo/common"
-	"github.com/denverdino/aliyungo/dns"
 	"github.com/denverdino/aliyungo/ram"
-	"github.com/denverdino/aliyungo/slb"
 	"github.com/hashicorp/terraform/helper/schema"
-	"gopkg.in/yaml.v2"
 )
 
 // common
@@ -70,6 +69,15 @@ func validateInstanceName(v interface{}, k string) (ws []string, errors []error)
 }
 
 func validateInstanceDescription(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 2 || len(value) > 256 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 256 characters", k))
+
+	}
+	return
+}
+
+func validateNASDescription(v interface{}, k string) (ws []string, errors []error) {
 	value := v.(string)
 	if len(value) < 2 || len(value) > 256 {
 		errors = append(errors, fmt.Errorf("%q cannot be longer than 256 characters", k))
@@ -196,12 +204,35 @@ func validateCIDRNetworkAddress(v interface{}, k string) (ws []string, errors []
 	return
 }
 
-func validateRouteEntryNextHopType(v interface{}, k string) (ws []string, errors []error) {
-	nht := NextHopType(v.(string))
-	if nht != NextHopIntance && nht != NextHopRouterInterface && nht != NextHopHaVip &&
-		nht != NextHopTunnel && nht != NextHopVpnGateway {
-		errors = append(errors, fmt.Errorf("%s must be one of %s %s %s %s %s", k,
-			NextHopIntance, NextHopRouterInterface, NextHopTunnel, NextHopHaVip, NextHopVpnGateway))
+func validateVpnCIDRNetworkAddress(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	cidrs := strings.Split(value, ",")
+	for _, cidr := range cidrs {
+		_, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			errors = append(errors, fmt.Errorf(
+				"%q must contain a valid CIDR, got error parsing: %s", k, err))
+			return
+		}
+
+		if ipnet == nil || cidr != ipnet.String() {
+			errors = append(errors, fmt.Errorf(
+				"%q must contain a valid network CIDR, expected %q, got %q",
+				k, ipnet, cidr))
+			return
+		}
+	}
+
+	return
+}
+
+func validateIpAddress(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	res := net.ParseIP(value)
+
+	if res == nil {
+		errors = append(errors, fmt.Errorf(
+			"%q must contain a valid ip address, got error parsing: %s", k, value))
 	}
 
 	return
@@ -291,6 +322,32 @@ func validateInternetChargeType(v interface{}, k string) (ws []string, errors []
 	return
 }
 
+func validateLifecycleTransaction(v interface{}, k string) (ws []string, errors []error) {
+	if value := v.(string); value != "" {
+		transition := LifecycleTransition(value)
+		if transition != ScaleIn &&
+			transition != ScaleOut {
+			errors = append(errors, fmt.Errorf(
+				"%q must contain a valid LifecycleTransition, expected %s or %s, got %q",
+				k, ScaleIn, ScaleOut, transition))
+		}
+	}
+	return
+}
+
+func validateActionResult(v interface{}, k string) (ws []string, errors []error) {
+	if value := v.(string); value != "" {
+		actionResult := ActionResult(value)
+		if actionResult != Continue &&
+			actionResult != Abandon {
+			errors = append(errors, fmt.Errorf(
+				"%q must contain a valid default result, expected %s or %s, got %q",
+				k, Continue, Abandon, actionResult))
+		}
+	}
+	return
+}
+
 func validateInternetMaxBandWidthOut(v interface{}, k string) (ws []string, errors []error) {
 	value := v.(int)
 	if value < 0 || value > 100 {
@@ -348,13 +405,13 @@ func validateSlbName(v interface{}, k string) (ws []string, errors []error) {
 
 func validateSlbInternetChargeType(v interface{}, k string) (ws []string, errors []error) {
 	if value := v.(string); value != "" {
-		chargeType := common.InternetChargeType(value)
 
-		if chargeType != "paybybandwidth" &&
-			chargeType != "paybytraffic" {
+		// Uniform all internet chare type value and be compatible with previous lower value.
+		if strings.ToLower(value) != strings.ToLower(string(PayByBandwidth)) &&
+			strings.ToLower(value) != strings.ToLower(string(PayByTraffic)) {
 			errors = append(errors, fmt.Errorf(
-				"%q must contain a valid InstanceChargeType, expected %s or %s, got %q",
-				k, "paybybandwidth", "paybytraffic", value))
+				"%q must contain a valid InternetChargeType, expected %s or %s, got %q",
+				k, PayByBandwidth, PayByTraffic, value))
 		}
 	}
 
@@ -363,9 +420,8 @@ func validateSlbInternetChargeType(v interface{}, k string) (ws []string, errors
 
 func validateSlbInstanceSpecType(v interface{}, k string) (ws []string, errors []error) {
 	if value := v.(string); value != "" {
-		specType := slb.LoadBalancerSpecType(value)
-		validLoadBalancerSpec := []slb.LoadBalancerSpecType{slb.S1Small, slb.S2Small,
-			slb.S2Medium, slb.S3Small, slb.S3Medium, slb.S3Large}
+		specType := LoadBalancerSpecType(value)
+		validLoadBalancerSpec := []LoadBalancerSpecType{S1Small, S2Small, S2Medium, S3Small, S3Medium, S3Large}
 
 		for _, s := range validLoadBalancerSpec {
 			if s == specType {
@@ -391,12 +447,12 @@ func validateSlbListenerBandwidth(v interface{}, k string) (ws []string, errors 
 
 func validateSlbListenerScheduler(v interface{}, k string) (ws []string, errors []error) {
 	if value := v.(string); value != "" {
-		scheduler := slb.SchedulerType(value)
+		scheduler := SchedulerType(value)
 
-		if scheduler != "wrr" && scheduler != "wlc" {
+		if scheduler != WRRScheduler && scheduler != WLCScheduler && scheduler != RRScheduler {
 			errors = append(errors, fmt.Errorf(
-				"%q must contain a valid SchedulerType, expected %s or %s, got %q",
-				k, "wrr", "wlc", value))
+				"%q must contain a valid SchedulerType, expected %s ,%s or %s, got %q",
+				k, "wrr", "wlc", "rr", value))
 		}
 	}
 
@@ -553,6 +609,23 @@ func validateAllowedIntValue(is []int) schema.SchemaValidateFunc {
 	}
 }
 
+func validateStringConvertInt64() schema.SchemaValidateFunc {
+	return func(v interface{}, k string) (ws []string, errors []error) {
+		if value, ok := v.(string); ok {
+			_, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				errors = append(errors, fmt.Errorf(
+					"%q should be convert to int64, got %q", k, value))
+			}
+		} else {
+			errors = append(errors, fmt.Errorf(
+				"%q should be convert to string, got %q", k, value))
+		}
+
+		return
+	}
+}
+
 func validateIntegerInRange(min, max int) schema.SchemaValidateFunc {
 	return func(v interface{}, k string) (ws []string, errors []error) {
 		value := v.(int)
@@ -663,10 +736,10 @@ func validateOssBucketLifecycleRuleId(v interface{}, k string) (ws []string, err
 
 func validateOssBucketDateTimestamp(v interface{}, k string) (ws []string, errors []error) {
 	value := v.(string)
-	_, err := time.Parse(time.RFC3339, fmt.Sprintf("%sT00:00:00Z", value))
+	_, err := time.Parse("2006-01-02", value)
 	if err != nil {
 		errors = append(errors, fmt.Errorf(
-			"%q cannot be parsed as RFC3339 Timestamp Format", value))
+			"%q cannot be parsed as date YYYY-MM-DD Format", value))
 	}
 	return
 }
@@ -703,30 +776,23 @@ func validateDomainName(v interface{}, k string) (ws []string, errors []error) {
 
 func validateDomainRecordType(v interface{}, k string) (ws []string, errors []error) {
 	// Valid Record types
-	// A, NS, MX, TXT, CNAME, SRV, AAAA, REDIRECT_URL, FORWORD_URL
+	// A, NS, MX, TXT, CNAME, SRV, AAAA, CAA, REDIRECT_URL, FORWORD_URL
 	validTypes := map[string]string{
-		dns.ARecord:           "",
-		dns.NSRecord:          "",
-		dns.MXRecord:          "",
-		dns.TXTRecord:         "",
-		dns.CNAMERecord:       "",
-		dns.SRVRecord:         "",
-		dns.AAAARecord:        "",
-		dns.RedirectURLRecord: "",
-		dns.ForwordURLRecord:  "",
+		ARecord:           "",
+		NSRecord:          "",
+		MXRecord:          "",
+		TXTRecord:         "",
+		CNAMERecord:       "",
+		SRVRecord:         "",
+		AAAARecord:        "",
+		CAARecord:         "",
+		RedirectURLRecord: "",
+		ForwordURLRecord:  "",
 	}
 
 	value := v.(string)
 	if _, ok := validTypes[value]; !ok {
-		errors = append(errors, fmt.Errorf("%q must be one of [A, NS, MX, TXT, CNAME, SRV, AAAA, REDIRECT_URL, FORWORD_URL]", k))
-	}
-	return
-}
-
-func validateDomainRecordPriority(v interface{}, k string) (ws []string, errors []error) {
-	value := v.(int)
-	if value > 10 || value < 1 {
-		errors = append(errors, fmt.Errorf("%q value is 1-10.", k))
+		errors = append(errors, fmt.Errorf("%q must be one of [A, NS, MX, TXT, CNAME, SRV, AAAA, CAA, REDIRECT_URL, FORWORD_URL]", k))
 	}
 	return
 }
@@ -796,30 +862,11 @@ func validateRamName(v interface{}, k string) (ws []string, errors []error) {
 	return
 }
 
-func validateRamDisplayName(v interface{}, k string) (ws []string, errors []error) {
-	value := v.(string)
-
-	pattern := `^[a-zA-Z0-9\.@\-\p{Han}]{1,12}$`
-	if match, _ := regexp.Match(pattern, []byte(value)); !match {
-		errors = append(errors, fmt.Errorf("%q is invalid.", k))
-	}
-	return
-}
-
 func validateComment(v interface{}, k string) (ws []string, errors []error) {
 	value := v.(string)
 
 	if len(value) > 128 {
 		errors = append(errors, fmt.Errorf("%q can not be longer than 128 characters.", k))
-	}
-	return
-}
-
-func validateRamDesc(v interface{}, k string) (ws []string, errors []error) {
-	value := v.(string)
-
-	if len(value) > 1024 {
-		errors = append(errors, fmt.Errorf("%q can not be longer than 1024 characters.", k))
 	}
 	return
 }
@@ -910,29 +957,6 @@ func validatePolicyType(v interface{}, k string) (ws []string, errors []error) {
 	return
 }
 
-func validateRamGroupName(v interface{}, k string) (ws []string, errors []error) {
-	value := v.(string)
-
-	if len(value) > 64 {
-		errors = append(errors, fmt.Errorf("%q can not be longer than 64 characters.", k))
-	}
-
-	pattern := `^[a-zA-Z0-9\-]+$`
-	if match, _ := regexp.Match(pattern, []byte(value)); !match {
-		errors = append(errors, fmt.Errorf("%q is invalid.", k))
-	}
-	return
-}
-
-func validateRamAlias(v interface{}, k string) (ws []string, errors []error) {
-	value := v.(string)
-
-	if len(value) > 32 || len(value) < 2 {
-		errors = append(errors, fmt.Errorf("%q can not be longer than 32 or less than 2 characters.", k))
-	}
-	return
-}
-
 func validateRamAKStatus(v interface{}, k string) (ws []string, errors []error) {
 	value := v.(string)
 
@@ -950,6 +974,16 @@ func validateContainerName(v interface{}, k string) (ws []string, errors []error
 	reg := regexp.MustCompile("^[a-zA-Z0-9\u4E00-\u9FA5]{1}[a-zA-Z0-9\u4E00-\u9FA5-]{0,62}$")
 	if !reg.MatchString(value) {
 		errors = append(errors, fmt.Errorf("%s should be 1-63 characters long, and can contain numbers, Chinese characters, English letters and hyphens, but cannot start with hyphens.", k))
+	}
+
+	return
+}
+
+func validateContainerVswitchId(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	reg := regexp.MustCompile("^vsw-[a-z0-9]*$")
+	if !reg.MatchString(value) {
+		errors = append(errors, fmt.Errorf("%s should start with 'vsw-'.", k))
 	}
 
 	return
@@ -978,6 +1012,30 @@ func validateContainerAppName(v interface{}, k string) (ws []string, errors []er
 		errors = append(errors, fmt.Errorf("%s should be 1-64 characters long, and can contain numbers, English letters and hyphens, but cannot start with hyphens.", k))
 	}
 
+	return
+}
+
+func validateContainerRegistryNamespaceName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 2 || len(value) > 30 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 30 characters and less than 2", k))
+	}
+	reg := regexp.MustCompile("^[a-z0-9]+[_\\-a-z0-9]*$")
+	if !reg.MatchString(value) {
+		errors = append(errors, fmt.Errorf("%s should be 2-30 characters long, and can contain numbers, English letters, underscores and hyphens, but cannot start with hyphens and underscores", k))
+	}
+	return
+}
+
+func validateContainerRegistryRepoName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 1 || len(value) > 64 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 64 characters and less than 1", k))
+	}
+	reg := regexp.MustCompile("^[a-z0-9]+[_\\-a-z0-9]*$")
+	if !reg.MatchString(value) {
+		errors = append(errors, fmt.Errorf("%s should be 1-64 characters long, and can contain numbers, English letters, underscores and hyphens, but cannot start with hyphens and underscores", k))
+	}
 	return
 }
 
@@ -1178,6 +1236,59 @@ func validateDBInstanceName(v interface{}, k string) (ws []string, errors []erro
 	return
 }
 
+func validateDBInstanceTags(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(map[string]interface{})
+	if len(value) > 10 {
+		errors = append(errors, fmt.Errorf("the size of %q should not be greater than 10.", k))
+		return
+	}
+	for tagK, tagV := range value {
+		relTagV := tagV.(string)
+		if tagK == "" {
+			errors = append(errors, fmt.Errorf("tag_key should not be empty."))
+			return
+		}
+		if len(tagK) > 64 {
+			errors = append(errors, fmt.Errorf("the length of tag_key(%q) should not be greater than 64.", tagK))
+			return
+		}
+		if len(relTagV) > 128 {
+			errors = append(errors, fmt.Errorf("the length of tag_value(%q) should not be greater than 128.", relTagV))
+			return
+		}
+		if strings.HasPrefix(strings.ToLower(tagK), "aliyun") {
+			errors = append(errors, fmt.Errorf("the tag_key(%q) cannot begin with aliyun.", tagK))
+			return
+		}
+		if strings.HasPrefix(strings.ToLower(relTagV), "aliyun") {
+			errors = append(errors, fmt.Errorf("the tag_value(%q) cannot begin with aliyun.", relTagV))
+			return
+		}
+	}
+	return
+}
+
+func validateRKVInstanceName(v interface{}, k string) (ws []string, errors []error) {
+	if value := v.(string); value != "" {
+		if len(value) < 2 || len(value) > 128 {
+			errors = append(errors, fmt.Errorf("%q cannot be less than 2 and larger than 128.", k))
+		}
+	}
+	return
+}
+
+func validateRKVPassword(v interface{}, k string) (ws []string, errors []error) {
+	if value := v.(string); value != "" {
+		if len(value) < 8 || len(value) > 30 {
+			errors = append(errors, fmt.Errorf("%q cannot be less than 8 and larger than 30", k))
+		}
+		if strings.ContainsAny(value, "! < > ( ) [ ] { { , ` ~ . - _ # $ % ^ & *") {
+			errors = append(errors, fmt.Errorf("%q cannot contain exclamation mark (!), angle brackets (<>), parentheses (()), square brackets ([]), braces ({}), comma (,), backquote (`), tilde (~), period (.), hyphen (-), underscore (_), number sign (#), dollar sign ($), percent sign %%), caret (^), ampersand (&), and asterisk (*)", k))
+		}
+	}
+	return
+}
+
 func validateKmsKeyStatus(v interface{}, k string) (ws []string, errors []error) {
 	status := KeyState(v.(string))
 	if status != Enabled && status != Disabled && status != PendingDeletion {
@@ -1196,4 +1307,319 @@ func validateNatGatewaySpec(v interface{}, k string) (ws []string, errors []erro
 			k, NatGatewaySmallSpec, NatGatewayMiddleSpec, NatGatewayLargeSpec, spec))
 	}
 	return
+}
+
+func validateEipChargeTypePeriod(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(int)
+	if (value > 0 && value < 10) || (value > 11 && value < 37 && value%12 == 0) {
+		return
+	}
+	errors = append(errors, fmt.Errorf(
+		"%q must be a valid period, expected [1-9], 12, 24 or 36, got %d.", k, value))
+	return
+}
+
+func validateRouterInterfaceChargeTypePeriod(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(int)
+	if (value > 0 && value < 10) || (value > 11 && value < 37 && value%12 == 0) {
+		return
+	}
+	errors = append(errors, fmt.Errorf(
+		"%q must be a valid period, expected [1-9], 12, 24 or 36, got %d.", k, value))
+	return
+}
+
+// VPN
+func validateVpnName(v interface{}, k string) (ws []string, errors []error) {
+	if value := v.(string); value != "" {
+		if len(value) < 1 || len(value) > 128 {
+			errors = append(errors, fmt.Errorf(
+				"%q must be a valid vpn name characters between 2 and 128",
+				k))
+			return
+		}
+	}
+
+	return
+}
+
+// period : 1-9 | 12 | 24 | 36
+func validateVpnPeriod(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(int)
+	if (value >= 1 && value <= 9) || value == 12 || value == 24 || value == 36 {
+		return
+	}
+	errors = append(errors, fmt.Errorf("%q must contain a valid period (1-9|12|24|36), got %s", k, string(value)))
+	return
+}
+
+func validateVpnBandwidth(is []int) schema.SchemaValidateFunc {
+	return func(v interface{}, k string) (ws []string, errors []error) {
+		value := v.(int)
+		existed := false
+		for _, i := range is {
+			if i == value {
+				existed = true
+				break
+			}
+		}
+		if !existed {
+			errors = append(errors, fmt.Errorf(
+				"%q must contain a valid bandwith (prepaid user: 5|10|20|50|100|200|500|1000 ; postpaid user: 10|100|200|500|1000), got %q", k, string(value)))
+		}
+		return
+
+	}
+}
+
+func validateVpnDescription(v interface{}, k string) (ws []string, errors []error) {
+	if value := v.(string); value != "" {
+		if len(value) < 2 || len(value) > 256 {
+			errors = append(errors, fmt.Errorf(
+				"%q must be a valid vpn description characters between 2 and 256",
+				k))
+			return
+		}
+	}
+
+	return
+}
+
+func validateSslVpnPortValue(is []int) schema.SchemaValidateFunc {
+	return func(v interface{}, k string) (ws []string, errors []error) {
+		ws, errors = validateInstancePort(v, k)
+		if errors != nil {
+			return
+		}
+
+		value := v.(int)
+		for _, i := range is {
+			if i == value {
+				errors = append(errors, fmt.Errorf(
+					"%q must contain a valid int value should not be in array %#v, got %q",
+					k, is, value))
+				return
+			}
+		}
+		return
+
+	}
+}
+
+func validateEvaluationCount(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(int)
+	if value <= 0 {
+		errors = append(errors, fmt.Errorf(
+			"%q must contain a valid evaluation count , expected greater than zero, got %d",
+			k, value))
+	}
+
+	return
+}
+
+func validateDatahubProjectName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 3 || len(value) > 32 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 32 characters and less than 3", k))
+	}
+	reg := regexp.MustCompile("^[a-zA-Z][a-zA-Z0-9_]{2,31}$")
+	if !reg.MatchString(value) {
+		errors = append(errors, fmt.Errorf("%s length is limited to 3-32 and only characters such as letters, digits and '_' are allowed", k))
+	}
+
+	return
+}
+
+func validateDatahubTopicName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 1 || len(value) > 128 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 128 characters and less than 1", k))
+	}
+	reg := regexp.MustCompile("^[a-zA-Z][a-zA-Z0-9_]{0,127}$")
+	if !reg.MatchString(value) {
+		errors = append(errors, fmt.Errorf("%s length is limited to 1-128 and only characters such as letters, digits and '_' are allowed", k))
+	}
+
+	return
+}
+
+func validateEndpoint(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len([]rune(value)) <= 0 {
+		return
+	}
+	url := "^http://[-A-Za-z0-9+&@#/%?=~_|!:,.;]+[-A-Za-z0-9+&@#/%=~_|]$"
+	queue := "^acs:mns:\\S{2}-\\S+:\\d+:queues/\\S+$"
+	email := "^directmail:\\w+@\\w+\\.\\w{2,4}$"
+	urlRe, err := regexp.Compile(url)
+	if err != nil {
+		panic(fmt.Errorf("url pattern has an error! %#v", err))
+	}
+	queueRe, err := regexp.Compile(queue)
+	if err != nil {
+		panic(fmt.Errorf("queue pattern has an error! %#v", err))
+	}
+	emailRe, err := regexp.Compile(email)
+	if err != nil {
+		panic(fmt.Errorf("email pattern has an error! %#v", err))
+	}
+	if !urlRe.MatchString(value) && !queueRe.MatchString(value) && !emailRe.MatchString(value) {
+		errors = append(errors, fmt.Errorf(
+			"%q must match the format.the format should be start with `http://` or directmail:{MailAddress} or acs:mns:{REGION}:{AccountID}:queues/{QueueName}, got %s",
+			k, value))
+	}
+	return
+
+}
+
+func validateCommonBandwidthPackageChargeType(v interface{}, k string) (ws []string, errors []error) {
+	if value := v.(string); value != "" {
+		if value != string(PayByBandwidth) &&
+			value != string(PayBy95) && value != string(PayByTraffic) {
+			errors = append(errors, fmt.Errorf(
+				"%q must contain a valid InternetChargeType, expected %s or %s or %s, got %q",
+				k, PayByBandwidth, PayBy95, PayByTraffic, value))
+		}
+	}
+	return
+}
+
+func validateRatio(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(int)
+	if value < 10 || value > 100 {
+		errors = append(errors, fmt.Errorf("%q must contain a valid ratio, got %q", k, string(value)))
+		return
+	}
+	return
+}
+
+func validateSlbInstanceTagNum(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(map[string]interface{})
+	if size := len(value); size > 10 {
+		errors = append(errors, fmt.Errorf("the size of %q should not be greater than 10,  %#v size is %d .", k, v, size))
+		return
+	}
+	return
+}
+
+func validateDataSourceSlbsTagsNum(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(map[string]interface{})
+	if size := len(value); size > 5 {
+		errors = append(errors, fmt.Errorf("the size of %q should not be greater than 5,  %#v size is %d .", k, v, size))
+		return
+	}
+	return
+}
+
+func validateCasName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 1 || len(value) > 64 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 64 characters or shorter than 1", k))
+	}
+
+	return
+}
+
+func validateDdoscooInstanceName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 1 || len(value) > 64 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 64 characters or shorter than 1", k))
+	}
+
+	return
+}
+
+func validateLaunchTemplateVersionDescription(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 2 || len(value) > 256 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 256 characters", k))
+
+	}
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		errors = append(errors, fmt.Errorf("%s cannot starts with http:// or https://", k))
+	}
+	return
+}
+
+func validateLaunchTemplateDescription(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 2 || len(value) > 256 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 256 characters", k))
+
+	}
+
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		errors = append(errors, fmt.Errorf("%s cannot starts with http:// or https://", k))
+	}
+	return
+}
+
+func validateLaunchTemplateName(v interface{}, k string) (ws []string, errors []error) {
+	value := v.(string)
+	if len(value) < 2 || len(value) > 256 {
+		errors = append(errors, fmt.Errorf("%q cannot be longer than 128 characters", k))
+	}
+
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		errors = append(errors, fmt.Errorf("%s cannot starts with http:// or https://", k))
+	}
+
+	return
+}
+
+func validateActiontrailEventrw(v interface{}, k string) (ws []string, errors []error) {
+	if value := v.(string); value != "" {
+		eventrw := EventRwType(value)
+		if eventrw != EventRead &&
+			eventrw != EventWrite &&
+			eventrw != EventAll {
+			errors = append(errors, fmt.Errorf(
+				"%q must contain a valid EventRW, expected %s, %s or %s, got %q",
+				k, EventRead, EventWrite, EventAll, eventrw))
+		}
+	}
+	return
+}
+
+// below copy/pasta from https://github.com/hashicorp/terraform/blob/master/helper/validation/validation.go
+// alicloud vendor contains very old version of Terraform which lacks this functions
+
+// IntBetween returns a SchemaValidateFunc which tests if the provided value
+// is of type int and is between min and max (inclusive)
+func intBetween(min, max int) schema.SchemaValidateFunc {
+	return func(i interface{}, k string) (s []string, es []error) {
+		v, ok := i.(int)
+		if !ok {
+			es = append(es, fmt.Errorf("expected type of %s to be int", k))
+			return
+		}
+
+		if v < min || v > max {
+			es = append(es, fmt.Errorf("expected %s to be in the range (%d - %d), got %d", k, min, max, v))
+			return
+		}
+
+		return
+	}
+}
+
+// StringMatch returns a SchemaValidateFunc which tests if the provided value
+// matches a given regexp. Optionally an error message can be provided to
+// return something friendlier than "must match some globby regexp".
+func stringMatch(r *regexp.Regexp, message string) schema.SchemaValidateFunc {
+	return func(i interface{}, k string) ([]string, []error) {
+		v, ok := i.(string)
+		if !ok {
+			return nil, []error{fmt.Errorf("expected type of %s to be string", k)}
+		}
+
+		if ok := r.MatchString(v); !ok {
+			if message != "" {
+				return nil, []error{fmt.Errorf("invalid value for %s (%s)", k, message)}
+
+			}
+			return nil, []error{fmt.Errorf("expected value of %s to match regular expression %q", k, r)}
+		}
+		return nil, nil
+	}
 }

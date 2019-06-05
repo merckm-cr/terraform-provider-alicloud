@@ -2,37 +2,133 @@ package alicloud
 
 import (
 	"fmt"
-	"log"
 	"testing"
 
-	"github.com/denverdino/aliyungo/dns"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/alidns"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
-	"github.com/hashicorp/terraform/terraform"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func TestAccAlicloudDnsRecord_basic(t *testing.T) {
-	var v dns.RecordTypeNew
+	var v *alidns.DescribeDomainRecordInfoResponse
+
+	resourceId := "alicloud_dns_record.default"
+	ra := resourceAttrInit(resourceId, basicMap)
+
+	serviceFunc := func() interface{} {
+		return &DnsService{testAccProvider.Meta().(*connectivity.AliyunClient)}
+	}
+	rc := resourceCheckInit(resourceId, &v, serviceFunc)
+
+	rac := resourceAttrCheckInit(rc, ra)
+
+	testAccCheck := rac.resourceAttrMapUpdateSet()
+	rand := acctest.RandInt()
+	name := fmt.Sprintf("tf-testacc%sdnsrecordbasic%v.abc", defaultRegionToTest, rand)
+	testAccConfig := resourceTestAccConfigFunc(resourceId, name, resourceDnsRecordConfigDependence)
 
 	resource.Test(t, resource.TestCase{
 		PreCheck: func() {
 			testAccPreCheck(t)
 		},
-
 		// module name
-		IDRefreshName: "alicloud_dns_record.record",
-
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckDnsRecordDestroy,
+		IDRefreshName: resourceId,
+		Providers:     testAccProviders,
+		CheckDestroy:  rac.checkResourceDestroy(),
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccDnsRecordConfig,
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"name":        "${alicloud_dns.default.name}",
+					"host_record": "alimail",
+					"type":        "CNAME",
+					"value":       "mail.mxhichina.com",
+				}),
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckDnsRecordExists(
-						"alicloud_dns_record.record", &v),
-					resource.TestCheckResourceAttr(
-						"alicloud_dns_record.record",
-						"type",
-						"CNAME"),
+					testAccCheck(map[string]string{
+						"name":  fmt.Sprintf("tf-testacc%sdnsrecordbasic%v.abc", defaultRegionToTest, rand),
+						"value": "mail.mxhichina.com",
+					}),
+				),
+			},
+			{
+				ResourceName:      resourceId,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"host_record": "alimailchange",
+				}),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"host_record": "alimailchange"}),
+				),
+			},
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"type":     "MX",
+					"priority": "2",
+				}),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{
+						"type":     "MX",
+						"priority": "2",
+					}),
+				),
+			},
+
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"priority": "3",
+				}),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"priority": "3"}),
+				),
+			},
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"value": "mail.change.com",
+				}),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"value": "mail.change.com"}),
+				),
+			},
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"ttl": "800",
+				}),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"ttl": "800"}),
+				),
+			},
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"routing": "telecom",
+				}),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"routing": "telecom"}),
+				),
+			},
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"ttl": "600",
+				}),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"ttl": "600"}),
+				),
+			},
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"name":        "${alicloud_dns.default.name}",
+					"host_record": "alimail",
+					"type":        "CNAME",
+					"value":       "mail.mxhichin.com",
+					"ttl":         "600",
+					"priority":    "1",
+					"routing":     "default",
+				}),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(basicMap),
 				),
 			},
 		},
@@ -40,116 +136,61 @@ func TestAccAlicloudDnsRecord_basic(t *testing.T) {
 
 }
 
-func testAccCheckDnsRecordExists(n string, record *dns.RecordTypeNew) resource.TestCheckFunc {
-	return func(s *terraform.State) error {
-		rs, ok := s.RootModule().Resources[n]
-		if !ok {
-			return fmt.Errorf("Not found: %s", n)
-		}
-
-		if rs.Primary.ID == "" {
-			return fmt.Errorf("No Domain Record ID is set")
-		}
-
-		client := testAccProvider.Meta().(*AliyunClient)
-		conn := client.dnsconn
-
-		request := &dns.DescribeDomainRecordInfoNewArgs{
-			RecordId: rs.Primary.ID,
-		}
-
-		response, err := conn.DescribeDomainRecordInfoNew(request)
-		log.Printf("[WARN] Domain record id %#v", rs.Primary.ID)
-
-		if err == nil {
-			*record = response.RecordTypeNew
-			return nil
-		}
-		return fmt.Errorf("Error finding domain record %#v", rs.Primary.ID)
+func TestAccAlicloudDnsRecord_multi(t *testing.T) {
+	var v *alidns.DescribeDomainRecordInfoResponse
+	resourceId := "alicloud_dns_record.default.9"
+	ra := resourceAttrInit(resourceId, basicMap)
+	serviceFunc := func() interface{} {
+		return &DnsService{testAccProvider.Meta().(*connectivity.AliyunClient)}
 	}
-}
-
-func TestAccAlicloudDnsRecord_priority(t *testing.T) {
-	var v dns.RecordTypeNew
+	rc := resourceCheckInit(resourceId, &v, serviceFunc)
+	rac := resourceAttrCheckInit(rc, ra)
+	testAccCheck := rac.resourceAttrMapUpdateSet()
+	rand := acctest.RandInt()
+	name := fmt.Sprintf("tf-testacc%sdnsrecordmulti%v.abc", defaultRegionToTest, rand)
+	testAccConfig := resourceTestAccConfigFunc(resourceId, name, resourceDnsRecordConfigDependence)
 
 	resource.Test(t, resource.TestCase{
 		PreCheck: func() {
 			testAccPreCheck(t)
 		},
-
-		// module name
-		IDRefreshName: "alicloud_dns_record.record",
-
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckDnsRecordDestroy,
+		IDRefreshName: resourceId,
+		Providers:     testAccProviders,
+		CheckDestroy:  rac.checkResourceDestroy(),
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccDnsRecordPriority,
+			{
+				Config: testAccConfig(map[string]interface{}{
+					"name":        "${alicloud_dns.default.name}",
+					"host_record": "alimail",
+					"type":        "CNAME",
+					"value":       "mail.mxhichina${count.index}.com",
+					"count":       "10",
+				}),
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckDnsRecordExists(
-						"alicloud_dns_record.record", &v),
-					resource.TestCheckResourceAttr(
-						"alicloud_dns_record.record", "type", "MX"),
-					resource.TestCheckResourceAttr(
-						"alicloud_dns_record.record", "priority", "10"),
+					testAccCheck(map[string]string{
+						"value": "mail.mxhichina9.com",
+					}),
 				),
 			},
 		},
 	})
-
 }
 
-func testAccCheckDnsRecordDestroy(s *terraform.State) error {
-
-	for _, rs := range s.RootModule().Resources {
-		if rs.Type != "alicloud_dns_record" {
-			continue
-		}
-
-		// Try to find the domain record
-		client := testAccProvider.Meta().(*AliyunClient)
-		conn := client.dnsconn
-
-		request := &dns.DescribeDomainRecordInfoNewArgs{
-			RecordId: rs.Primary.ID,
-		}
-
-		response, err := conn.DescribeDomainRecordInfoNew(request)
-		if err != nil {
-			return err
-		}
-		if response.RecordId != "" {
-			return fmt.Errorf("Error Domain record still exist.")
-		}
-	}
-
-	return nil
+func resourceDnsRecordConfigDependence(name string) string {
+	return fmt.Sprintf(`
+resource "alicloud_dns" "default" {
+  name = "%s"
+}
+`, name)
 }
 
-const testAccDnsRecordConfig = `
-resource "alicloud_dns" "dns" {
-  name = "yufish.com"
+var basicMap = map[string]string{
+	"host_record": "alimail",
+	"type":        "CNAME",
+	"ttl":         "600",
+	"priority":    "0",
+	"value":       "mail.mxhichin.com",
+	"routing":     "default",
+	"status":      "ENABLE",
+	"locked":      "false",
 }
-
-resource "alicloud_dns_record" "record" {
-  name = "${alicloud_dns.dns.name}"
-  host_record = "alimail"
-  type = "CNAME"
-  value = "mail.mxhichin.com"
-  count = 1
-}
-`
-const testAccDnsRecordPriority = `
-resource "alicloud_dns" "dns" {
-  name = "yufish.com"
-}
-
-resource "alicloud_dns_record" "record" {
-  name = "${alicloud_dns.dns.name}"
-  host_record = "alipriority"
-  type = "MX"
-  value = "www.aliyun.com"
-  count = 1
-  priority = 10
-}
-`

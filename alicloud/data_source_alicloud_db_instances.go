@@ -6,6 +6,7 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/rds"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudDBInstances() *schema.Resource {
@@ -165,40 +166,47 @@ func dataSourceAlicloudDBInstances() *schema.Resource {
 }
 
 func dataSourceAlicloudDBInstancesRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).rdsconn
+	client := meta.(*connectivity.AliyunClient)
 
-	args := rds.CreateDescribeDBInstancesRequest()
+	request := rds.CreateDescribeDBInstancesRequest()
 
-	args.RegionId = getRegionId(d, meta)
-	args.Engine = d.Get("engine").(string)
-	args.DBInstanceStatus = d.Get("status").(string)
-	args.DBInstanceType = d.Get("db_type").(string)
-	args.VpcId = d.Get("vpc_id").(string)
-	args.VSwitchId = d.Get("vswitch_id").(string)
-	args.ConnectionMode = d.Get("connection_mode").(string)
-	args.Tags = d.Get("tags").(string)
-	args.PageSize = requests.NewInteger(PageSizeLarge)
+	request.RegionId = client.RegionId
+	request.Engine = d.Get("engine").(string)
+	request.DBInstanceStatus = d.Get("status").(string)
+	request.DBInstanceType = d.Get("db_type").(string)
+	request.VpcId = d.Get("vpc_id").(string)
+	request.VSwitchId = d.Get("vswitch_id").(string)
+	request.ConnectionMode = d.Get("connection_mode").(string)
+	request.Tags = d.Get("tags").(string)
+	request.PageSize = requests.NewInteger(PageSizeLarge)
+	request.PageNumber = requests.NewInteger(1)
 
 	var dbi []rds.DBInstance
 
 	var nameRegex *regexp.Regexp
 	if v, ok := d.GetOk("name_regex"); ok {
-		if r, err := regexp.Compile(v.(string)); err == nil {
-			nameRegex = r
+		r, err := regexp.Compile(v.(string))
+		if err != nil {
+			return WrapError(err)
 		}
+		nameRegex = r
 	}
 
 	for {
-		resp, err := conn.DescribeDBInstances(args)
+		raw, err := client.WithRdsClient(func(rdsClient *rds.Client) (interface{}, error) {
+			return rdsClient.DescribeDBInstances(request)
+		})
 		if err != nil {
-			return err
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_db_instances", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
 
-		if resp == nil || len(resp.Items.DBInstance) < 1 {
+		response, _ := raw.(*rds.DescribeDBInstancesResponse)
+		addDebug(request.GetActionName(), response)
+		if len(response.Items.DBInstance) < 1 {
 			break
 		}
 
-		for _, item := range resp.Items.DBInstance {
+		for _, item := range response.Items.DBInstance {
 			if nameRegex != nil {
 				if !nameRegex.MatchString(item.DBInstanceDescription) {
 					continue
@@ -207,13 +215,16 @@ func dataSourceAlicloudDBInstancesRead(d *schema.ResourceData, meta interface{})
 			dbi = append(dbi, item)
 		}
 
-		if len(resp.Items.DBInstance) < PageSizeLarge {
+		if len(response.Items.DBInstance) < PageSizeLarge {
 			break
 		}
 
-		args.PageNumber = args.PageNumber + requests.NewInteger(1)
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			request.PageNumber = page
+		}
 	}
-
 	return rdsInstancesDescription(d, dbi)
 }
 
@@ -222,6 +233,10 @@ func rdsInstancesDescription(d *schema.ResourceData, dbi []rds.DBInstance) error
 	var s []map[string]interface{}
 
 	for _, item := range dbi {
+		readOnlyInstanceIDs := []string{}
+		for _, id := range item.ReadOnlyDBInstanceIds.ReadOnlyDBInstanceId {
+			readOnlyInstanceIDs = append(readOnlyInstanceIDs, id.DBInstanceId)
+		}
 		mapping := map[string]interface{}{
 			"id":                    item.DBInstanceId,
 			"name":                  item.DBInstanceDescription,
@@ -240,7 +255,7 @@ func rdsInstancesDescription(d *schema.ResourceData, dbi []rds.DBInstance) error
 			"master_instance_id":    item.MasterInstanceId,
 			"guard_instance_id":     item.GuardDBInstanceId,
 			"temp_instance_id":      item.TempDBInstanceId,
-			"readonly_instance_ids": item.ReadOnlyDBInstanceIds.ReadOnlyDBInstanceId,
+			"readonly_instance_ids": readOnlyInstanceIDs,
 			"vpc_id":                item.VpcId,
 			"vswitch_id":            item.VSwitchId,
 		}
@@ -251,7 +266,7 @@ func rdsInstancesDescription(d *schema.ResourceData, dbi []rds.DBInstance) error
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("instances", s); err != nil {
-		return err
+		return WrapError(err)
 	}
 
 	// create a json file in current directory and write data source to it

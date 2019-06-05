@@ -8,9 +8,10 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/rds"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
-func TestAccAlicloudDBAccountPrivilege_basic(t *testing.T) {
+func TestAccAlicloudDBAccountPrivilege_update(t *testing.T) {
 
 	var account rds.DBInstanceAccount
 
@@ -25,12 +26,14 @@ func TestAccAlicloudDBAccountPrivilege_basic(t *testing.T) {
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckDBAccountPrivilegeDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccDBAccountPrivilege_basic,
+			{
+				Config: testAccDBAccountPrivilege_basic(RdsCommonTestCase),
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckDBAccountPrivilegeExists(
 						"alicloud_db_account_privilege.privilege", &account),
+					resource.TestCheckResourceAttrSet("alicloud_db_account_privilege.privilege", "instance_id"),
 					resource.TestCheckResourceAttr("alicloud_db_account_privilege.privilege", "account_name", "tftestprivilege"),
+					resource.TestCheckResourceAttr("alicloud_db_account_privilege.privilege", "privilege", "ReadOnly"),
 					resource.TestCheckResourceAttr("alicloud_db_account_privilege.privilege", "db_names.#", "2"),
 				),
 			},
@@ -50,9 +53,10 @@ func testAccCheckDBAccountPrivilegeExists(n string, d *rds.DBInstanceAccount) re
 			return fmt.Errorf("No DB account ID is set")
 		}
 
-		client := testAccProvider.Meta().(*AliyunClient)
+		client := testAccProvider.Meta().(*connectivity.AliyunClient)
+		rsdService := RdsService{client}
 		parts := strings.Split(rs.Primary.ID, COLON_SEPARATED)
-		account, err := client.DescribeDatabaseAccount(parts[0], parts[1])
+		account, err := rsdService.DescribeDBAccountPrivilege(rs.Primary.ID)
 
 		if err != nil {
 			return err
@@ -68,7 +72,8 @@ func testAccCheckDBAccountPrivilegeExists(n string, d *rds.DBInstanceAccount) re
 }
 
 func testAccCheckDBAccountPrivilegeDestroy(s *terraform.State) error {
-	client := testAccProvider.Meta().(*AliyunClient)
+	client := testAccProvider.Meta().(*connectivity.AliyunClient)
+	rsdService := RdsService{client}
 
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "alicloud_db_account_privilege" {
@@ -77,7 +82,7 @@ func testAccCheckDBAccountPrivilegeDestroy(s *terraform.State) error {
 
 		parts := strings.Split(rs.Primary.ID, COLON_SEPARATED)
 
-		account, err := client.DescribeDatabaseAccount(parts[0], parts[1])
+		account, err := rsdService.DescribeDBAccountPrivilege(rs.Primary.ID)
 
 		// Verify the error is what we want
 		if err != nil {
@@ -95,52 +100,45 @@ func testAccCheckDBAccountPrivilegeDestroy(s *terraform.State) error {
 	return nil
 }
 
-const testAccDBAccountPrivilege_basic = `
-variable "name" {
-	default = "testaccdbaccountprivilege_basic"
-}
-data "alicloud_zones" "default" {
-	"available_resource_creation"= "Rds"
-}
+func testAccDBAccountPrivilege_basic(common string) string {
+	return fmt.Sprintf(`
+	%s
+	variable "creation" {
+		default = "Rds"
+	}
 
-resource "alicloud_vpc" "foo" {
-	name = "${var.name}"
-	cidr_block = "172.16.0.0/12"
-}
+	variable "name" {
+		default = "tf-testaccDBaccountprivilege_basic"
+	}
 
-resource "alicloud_vswitch" "foo" {
- 	vpc_id = "${alicloud_vpc.foo.id}"
- 	cidr_block = "172.16.0.0/21"
- 	availability_zone = "${data.alicloud_zones.default.zones.0.id}"
-}
+	resource "alicloud_db_instance" "instance" {
+		engine = "MySQL"
+		engine_version = "5.6"
+		instance_type = "rds.mysql.s1.small"
+		instance_storage = "10"
+		vswitch_id = "${alicloud_vswitch.default.id}"
+		instance_name = "${var.name}"
+	}
 
-resource "alicloud_db_instance" "instance" {
-	engine = "MySQL"
-	engine_version = "5.6"
-	instance_type = "rds.mysql.t1.small"
-	instance_storage = "10"
-  	vswitch_id = "${alicloud_vswitch.foo.id}"
-  	instance_name = "${var.name}"
-}
+	resource "alicloud_db_database" "db" {
+	  count = 2
+	  instance_id = "${alicloud_db_instance.instance.id}"
+	  name = "tfaccountpri_${count.index}"
+	  description = "from terraform"
+	}
 
-resource "alicloud_db_database" "db" {
-  count = 2
-  instance_id = "${alicloud_db_instance.instance.id}"
-  name = "${var.name}_${count.index}"
-  description = "from terraform"
-}
+	resource "alicloud_db_account" "account" {
+	  instance_id = "${alicloud_db_instance.instance.id}"
+	  name = "tftestprivilege"
+	  password = "Test12345"
+	  description = "from terraform"
+	}
 
-resource "alicloud_db_account" "account" {
-  instance_id = "${alicloud_db_instance.instance.id}"
-  name = "tftestprivilege"
-  password = "Test12345"
-  description = "from terraform"
+	resource "alicloud_db_account_privilege" "privilege" {
+	  instance_id = "${alicloud_db_instance.instance.id}"
+	  account_name = "${alicloud_db_account.account.name}"
+	  privilege = "ReadOnly"
+	  db_names = ["${alicloud_db_database.db.*.name}"]
+	}
+	`, common)
 }
-
-resource "alicloud_db_account_privilege" "privilege" {
-  instance_id = "${alicloud_db_instance.instance.id}"
-  account_name = "${alicloud_db_account.account.name}"
-  privilege = "ReadOnly"
-  db_names = ["${alicloud_db_database.db.*.name}"]
-}
-`

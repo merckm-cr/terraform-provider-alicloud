@@ -3,22 +3,24 @@ package alicloud
 import (
 	"testing"
 
+	"github.com/hashicorp/terraform/helper/acctest"
+
 	"github.com/hashicorp/terraform/helper/resource"
 )
 
 func TestAccAlicloudKeyPair_importBasic(t *testing.T) {
-	resourceName := "alicloud_key_pair.basic"
+	resourceName := "alicloud_key_pair.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckKeyPairDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccKeyPairConfig,
+			{
+				Config: testAccKeyPairConfigBasic(acctest.RandIntRange(1000, 9999)),
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:            resourceName,
 				ImportState:             true,
 				ImportStateVerify:       true,

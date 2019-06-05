@@ -6,6 +6,7 @@ import (
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudRegions() *schema.Resource {
@@ -13,13 +14,13 @@ func dataSourceAlicloudRegions() *schema.Resource {
 		Read: dataSourceAlicloudRegionsRead,
 
 		Schema: map[string]*schema.Schema{
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
 			},
 
-			"current": &schema.Schema{
+			"current": {
 				Type:     schema.TypeBool,
 				Optional: true,
 				Computed: true,
@@ -28,9 +29,13 @@ func dataSourceAlicloudRegions() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-
+			"ids": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			//Computed value
-			"regions": &schema.Schema{
+			"regions": {
 				Type:     schema.TypeList,
 				Computed: true,
 				Elem: &schema.Resource{
@@ -55,13 +60,16 @@ func dataSourceAlicloudRegions() *schema.Resource {
 }
 
 func dataSourceAlicloudRegionsRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ecsconn
-	currentRegion := getRegionId(d, meta)
+	client := meta.(*connectivity.AliyunClient)
+	currentRegion := client.RegionId
 
-	resp, err := conn.DescribeRegions(ecs.CreateDescribeRegionsRequest())
+	raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+		return ecsClient.DescribeRegions(ecs.CreateDescribeRegionsRequest())
+	})
 	if err != nil {
 		return err
 	}
+	resp, _ := raw.(*ecs.DescribeRegionsResponse)
 	if resp == nil || len(resp.Regions.Region) == 0 {
 		return fmt.Errorf("no matching regions found")
 	}
@@ -112,6 +120,9 @@ func regionsDescriptionAttributes(d *schema.ResourceData, regions []ecs.Region) 
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("regions", s); err != nil {
+		return err
+	}
+	if err := d.Set("ids", ids); err != nil {
 		return err
 	}
 

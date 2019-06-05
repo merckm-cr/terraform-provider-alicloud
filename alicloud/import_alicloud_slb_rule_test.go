@@ -7,18 +7,18 @@ import (
 )
 
 func TestAccAlicloudSlbRule_import(t *testing.T) {
-	resourceName := "alicloud_slb_rule.rule"
+	resourceName := "alicloud_slb_rule.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSlbRuleDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccSlbRuleBasic,
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,

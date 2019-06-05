@@ -1,12 +1,11 @@
 package alicloud
 
 import (
-	"fmt"
-	"log"
 	"regexp"
 
-	"github.com/denverdino/aliyungo/ram"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudRamGroups() *schema.Resource {
@@ -41,7 +40,11 @@ func dataSourceAlicloudRamGroups() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-
+			"names": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			// Computed values
 			"groups": {
 				Type:     schema.TypeList,
@@ -64,7 +67,8 @@ func dataSourceAlicloudRamGroups() *schema.Resource {
 }
 
 func dataSourceAlicloudRamGroupsRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ramconn
+	client := meta.(*connectivity.AliyunClient)
+	ramService := RamService{client}
 	allGroups := []interface{}{}
 
 	allGroupsMap := make(map[string]interface{})
@@ -79,17 +83,21 @@ func dataSourceAlicloudRamGroupsRead(d *schema.ResourceData, meta interface{}) e
 	nameRegex, nameRegexOk := d.GetOk("name_regex")
 
 	if policyTypeOk && !policyNameOk {
-		return fmt.Errorf("You must set 'policy_name' at one time when you set 'policy_type'.")
+		return WrapError(Error("You must set 'policy_name' at one time when you set 'policy_type'."))
 	}
 
 	// groups filtered by name_regex
-	args := ram.GroupListRequest{}
+	request := ram.CreateListGroupsRequest()
 	for {
-		resp, err := conn.ListGroup(args)
+		raw, err := client.WithRamClient(func(ramClient *ram.Client) (interface{}, error) {
+			return ramClient.ListGroups(request)
+		})
 		if err != nil {
-			return fmt.Errorf("ListGroup got an error: %#v", err)
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_ram_groups", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-		for _, v := range resp.Groups.Group {
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*ram.ListGroupsResponse)
+		for _, v := range response.Groups.Group {
 			if nameRegexOk {
 				r := regexp.MustCompile(nameRegex.(string))
 				if !r.MatchString(v.GroupName) {
@@ -98,20 +106,25 @@ func dataSourceAlicloudRamGroupsRead(d *schema.ResourceData, meta interface{}) e
 			}
 			allGroupsMap[v.GroupName] = v
 		}
-		if !resp.IsTruncated {
+		if !response.IsTruncated {
 			break
 		}
-		args.Marker = resp.Marker
+		request.Marker = response.Marker
 	}
 
 	// groups for user
 	if userNameOk {
-		resp, err := conn.ListGroupsForUser(ram.UserQueryRequest{UserName: userName.(string)})
+		request := ram.CreateListGroupsForUserRequest()
+		request.UserName = userName.(string)
+		raw, err := client.WithRamClient(func(ramClient *ram.Client) (interface{}, error) {
+			return ramClient.ListGroupsForUser(request)
+		})
 		if err != nil {
-			return fmt.Errorf("ListGroupsForUser got an error: %#v", err)
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_ram_groups", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-
-		for _, v := range resp.Groups.Group {
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*ram.ListGroupsForUserResponse)
+		for _, v := range response.Groups.Group {
 			userFilterGroupsMap[v.GroupName] = v
 		}
 		dataMap = append(dataMap, userFilterGroupsMap)
@@ -119,29 +132,29 @@ func dataSourceAlicloudRamGroupsRead(d *schema.ResourceData, meta interface{}) e
 
 	// groups which attach with this policy
 	if policyNameOk {
-		pType := ram.System
+		pType := "System"
 		if policyTypeOk {
-			pType = ram.Type(policyType.(string))
+			pType = policyType.(string)
 		}
-		resp, err := conn.ListEntitiesForPolicy(ram.PolicyRequest{PolicyName: policyName.(string), PolicyType: pType})
+		request := ram.CreateListEntitiesForPolicyRequest()
+		request.PolicyType = pType
+		request.PolicyName = policyName.(string)
+		raw, err := client.WithRamClient(func(ramClient *ram.Client) (interface{}, error) {
+			return ramClient.ListEntitiesForPolicy(request)
+		})
 		if err != nil {
-			return fmt.Errorf("ListEntitiesForPolicy got an error: %#v", err)
+			return WrapErrorf(err, DataDefaultErrorMsg, "alicloud_ram_groups", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-
-		for _, v := range resp.Groups.Group {
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*ram.ListEntitiesForPolicyResponse)
+		for _, v := range response.Groups.Group {
 			policyFilterGroupsMap[v.GroupName] = v
 		}
 		dataMap = append(dataMap, policyFilterGroupsMap)
 	}
 
 	// GetIntersection of each map
-	allGroups = GetIntersection(dataMap, allGroupsMap)
-
-	if len(allGroups) < 1 {
-		return fmt.Errorf("Your query returned no results. Please change your search criteria and try again.")
-	}
-
-	log.Printf("[DEBUG] alicloud_ram_groups - Groups found: %#v", allGroups)
+	allGroups = ramService.GetIntersection(dataMap, allGroupsMap)
 
 	return ramGroupsDescriptionAttributes(d, allGroups)
 }
@@ -155,16 +168,17 @@ func ramGroupsDescriptionAttributes(d *schema.ResourceData, groups []interface{}
 			"name":     group.GroupName,
 			"comments": group.Comments,
 		}
-		log.Printf("[DEBUG] alicloud_ram_groups - adding group: %v", mapping)
 		ids = append(ids, v.(ram.Group).GroupName)
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("groups", s); err != nil {
-		return err
+		return WrapError(err)
 	}
-
+	if err := d.Set("names", ids); err != nil {
+		return WrapError(err)
+	}
 	// create a json file in current directory and write data source to it.
 	if output, ok := d.GetOk("output_file"); ok && output.(string) != "" {
 		writeToFile(output.(string), s)

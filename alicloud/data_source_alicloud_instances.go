@@ -1,15 +1,13 @@
 package alicloud
 
 import (
-	"fmt"
 	"log"
 	"regexp"
-
-	"reflect"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudInstances() *schema.Resource {
@@ -51,7 +49,7 @@ func dataSourceAlicloudInstances() *schema.Resource {
 				Optional: true,
 				ForceNew: true,
 			},
-			"availability_zone": &schema.Schema{
+			"availability_zone": {
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
@@ -66,6 +64,11 @@ func dataSourceAlicloudInstances() *schema.Resource {
 			},
 
 			// Computed values
+			"names": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			"instances": {
 				Type:     schema.TypeList,
 				Computed: true,
@@ -185,54 +188,63 @@ func dataSourceAlicloudInstances() *schema.Resource {
 	}
 }
 func dataSourceAlicloudInstancesRead(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).ecsconn
+	client := meta.(*connectivity.AliyunClient)
 
-	args := ecs.CreateDescribeInstancesRequest()
-	args.Status = d.Get("status").(string)
+	request := ecs.CreateDescribeInstancesRequest()
+	request.Status = d.Get("status").(string)
 
 	if v, ok := d.GetOk("ids"); ok && len(v.([]interface{})) > 0 {
-		args.InstanceIds = convertListToJsonString(v.([]interface{}))
+		request.InstanceIds = convertListToJsonString(v.([]interface{}))
 	}
 	if v, ok := d.GetOk("vpc_id"); ok && v.(string) != "" {
-		args.VpcId = v.(string)
+		request.VpcId = v.(string)
 	}
 	if v, ok := d.GetOk("vswitch_id"); ok && v.(string) != "" {
-		args.VSwitchId = v.(string)
+		request.VSwitchId = v.(string)
 	}
 	if v, ok := d.GetOk("availability_zone"); ok && v.(string) != "" {
-		args.ZoneId = v.(string)
+		request.ZoneId = v.(string)
 	}
 	if v, ok := d.GetOk("tags"); ok {
-		s := reflect.ValueOf(args).Elem()
-		count := 1
+		var tags []ecs.DescribeInstancesTag
+
 		for key, value := range v.(map[string]interface{}) {
-			s.FieldByName(fmt.Sprintf("Tag%dKey", count)).Set(reflect.ValueOf(key))
-			s.FieldByName(fmt.Sprintf("Tag%dValue", count)).Set(reflect.ValueOf(value))
-			count++
+			tags = append(tags, ecs.DescribeInstancesTag{
+				Key:   key,
+				Value: value.(string),
+			})
 		}
+		request.Tag = &tags
 	}
 
 	var allInstances []ecs.Instance
-	args.PageSize = requests.NewInteger(PageSizeLarge)
-	args.PageNumber = requests.NewInteger(1)
+	request.PageSize = requests.NewInteger(PageSizeLarge)
+	request.PageNumber = requests.NewInteger(1)
 
 	for {
-		resp, err := conn.DescribeInstances(args)
+		raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+			return ecsClient.DescribeInstances(request)
+		})
 		if err != nil {
-			return err
+			return WrapErrorf(err, DefaultErrorMsg, "alicloud_instances", request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-
-		if resp == nil || len(resp.Instances.Instance) < 1 {
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*ecs.DescribeInstancesResponse)
+		if len(response.Instances.Instance) < 1 {
 			break
 		}
 
-		allInstances = append(allInstances, resp.Instances.Instance...)
+		allInstances = append(allInstances, response.Instances.Instance...)
 
-		if len(resp.Instances.Instance) < PageSizeLarge {
+		if len(response.Instances.Instance) < PageSizeLarge {
 			break
 		}
 
-		args.PageNumber = args.PageNumber + requests.NewInteger(1)
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			return WrapError(err)
+		} else {
+			request.PageNumber = page
+		}
 	}
 
 	var filteredInstancesTemp []ecs.Instance
@@ -257,18 +269,13 @@ func dataSourceAlicloudInstancesRead(d *schema.ResourceData, meta interface{}) e
 		filteredInstancesTemp = allInstances
 	}
 
-	if len(filteredInstancesTemp) < 1 {
-		return fmt.Errorf("Your query returned no results. Please change your search criteria and try again.")
-	}
-
-	log.Printf("[DEBUG] alicloud_instances - Instances found: %#v", filteredInstancesTemp)
-
 	return instancessDescriptionAttributes(d, filteredInstancesTemp, meta)
 }
 
 // populate the numerous fields that the instance description returns.
 func instancessDescriptionAttributes(d *schema.ResourceData, instances []ecs.Instance, meta interface{}) error {
 	var ids []string
+	var names []string
 	var s []map[string]interface{}
 	for _, inst := range instances {
 		mapping := map[string]interface{}{
@@ -305,14 +312,16 @@ func instancessDescriptionAttributes(d *schema.ResourceData, instances []ecs.Ins
 			mapping["public_ip"] = inst.VpcAttributes.NatIpAddress
 		}
 
-		log.Printf("[DEBUG] alicloud_instance - adding instance mapping: %v", mapping)
 		ids = append(ids, inst.InstanceId)
+		names = append(names, inst.InstanceName)
 		s = append(s, mapping)
 	}
 
 	d.SetId(dataResourceIdHash(ids))
+	d.Set("ids", ids)
+	d.Set("names", names)
 	if err := d.Set("instances", s); err != nil {
-		return err
+		return WrapError(err)
 	}
 
 	// create a json file in current directory and write data source to it.
@@ -324,23 +333,27 @@ func instancessDescriptionAttributes(d *schema.ResourceData, instances []ecs.Ins
 
 //Returns a mapping of instance disks
 func instanceDisksMappings(d *schema.ResourceData, instanceId string, meta interface{}) []map[string]interface{} {
+	client := meta.(*connectivity.AliyunClient)
+	request := ecs.CreateDescribeDisksRequest()
+	request.InstanceId = instanceId
 
-	req := ecs.CreateDescribeDisksRequest()
-	req.InstanceId = instanceId
-
-	resp, err := meta.(*AliyunClient).ecsconn.DescribeDisks(req)
+	raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+		return ecsClient.DescribeDisks(request)
+	})
 
 	if err != nil {
 		log.Printf("[ERROR] DescribeDisks for instance got error: %#v", err)
 		return nil
 	}
-	if resp == nil || len(resp.Disks.Disk) < 1 {
+	addDebug(request.GetActionName(), raw)
+	response, _ := raw.(*ecs.DescribeDisksResponse)
+	if len(response.Disks.Disk) < 1 {
 		return nil
 	}
 
 	var s []map[string]interface{}
 
-	for _, v := range resp.Disks.Disk {
+	for _, v := range response.Disks.Disk {
 		mapping := map[string]interface{}{
 			"device":   v.Device,
 			"size":     v.Size,

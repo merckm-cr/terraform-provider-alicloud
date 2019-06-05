@@ -19,6 +19,8 @@ package ess
 type ScalingGroup struct {
 	DefaultCooldown              int             `json:"DefaultCooldown" xml:"DefaultCooldown"`
 	MaxSize                      int             `json:"MaxSize" xml:"MaxSize"`
+	PendingWaitCapacity          int             `json:"PendingWaitCapacity" xml:"PendingWaitCapacity"`
+	RemovingWaitCapacity         int             `json:"RemovingWaitCapacity" xml:"RemovingWaitCapacity"`
 	PendingCapacity              int             `json:"PendingCapacity" xml:"PendingCapacity"`
 	RemovingCapacity             int             `json:"RemovingCapacity" xml:"RemovingCapacity"`
 	ScalingGroupName             string          `json:"ScalingGroupName" xml:"ScalingGroupName"`
@@ -26,6 +28,8 @@ type ScalingGroup struct {
 	StandbyCapacity              int             `json:"StandbyCapacity" xml:"StandbyCapacity"`
 	ProtectedCapacity            int             `json:"ProtectedCapacity" xml:"ProtectedCapacity"`
 	ActiveScalingConfigurationId string          `json:"ActiveScalingConfigurationId" xml:"ActiveScalingConfigurationId"`
+	LaunchTemplateId             string          `json:"LaunchTemplateId" xml:"LaunchTemplateId"`
+	LaunchTemplateVersion        string          `json:"LaunchTemplateVersion" xml:"LaunchTemplateVersion"`
 	ScalingGroupId               string          `json:"ScalingGroupId" xml:"ScalingGroupId"`
 	RegionId                     string          `json:"RegionId" xml:"RegionId"`
 	TotalCapacity                int             `json:"TotalCapacity" xml:"TotalCapacity"`
@@ -36,8 +40,12 @@ type ScalingGroup struct {
 	VpcId                        string          `json:"VpcId" xml:"VpcId"`
 	VSwitchId                    string          `json:"VSwitchId" xml:"VSwitchId"`
 	MultiAZPolicy                string          `json:"MultiAZPolicy" xml:"MultiAZPolicy"`
+	HealthCheckType              string          `json:"HealthCheckType" xml:"HealthCheckType"`
+	ScalingPolicy                string          `json:"ScalingPolicy" xml:"ScalingPolicy"`
+	StoppedCapacity              int             `json:"StoppedCapacity" xml:"StoppedCapacity"`
 	VSwitchIds                   VSwitchIds      `json:"VSwitchIds" xml:"VSwitchIds"`
 	RemovalPolicies              RemovalPolicies `json:"RemovalPolicies" xml:"RemovalPolicies"`
 	DBInstanceIds                DBInstanceIds   `json:"DBInstanceIds" xml:"DBInstanceIds"`
 	LoadBalancerIds              LoadBalancerIds `json:"LoadBalancerIds" xml:"LoadBalancerIds"`
+	VServerGroups                VServerGroups   `json:"VServerGroups" xml:"VServerGroups"`
 }

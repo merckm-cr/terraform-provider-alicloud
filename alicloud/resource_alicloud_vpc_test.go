@@ -2,99 +2,106 @@ package alicloud
 
 import (
 	"fmt"
+	"log"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform/helper/acctest"
+
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/vpc"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
-func TestAccAlicloudVpc_basic(t *testing.T) {
-	var vpc vpc.DescribeVpcAttributeResponse
-
-	resource.Test(t, resource.TestCase{
-		PreCheck: func() {
-			testAccPreCheck(t)
-		},
-
-		// module name
-		IDRefreshName: "alicloud_vpc.foo",
-		Providers:     testAccProviders,
-		CheckDestroy:  testAccCheckVpcDestroy,
-		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccVpcConfig,
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckVpcExists("alicloud_vpc.foo", &vpc),
-					resource.TestCheckResourceAttr(
-						"alicloud_vpc.foo", "cidr_block", "172.16.0.0/12"),
-					resource.TestCheckResourceAttrSet(
-						"alicloud_vpc.foo", "router_id"),
-					resource.TestCheckResourceAttrSet(
-						"alicloud_vpc.foo", "route_table_id"),
-				),
-			},
-		},
-	})
-
-}
-
-func TestAccAlicloudVpc_update(t *testing.T) {
-	var vpc vpc.DescribeVpcAttributeResponse
-
-	resource.Test(t, resource.TestCase{
-		PreCheck: func() {
-			testAccPreCheck(t)
-		},
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckVpcDestroy,
-		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccVpcConfig,
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckVpcExists("alicloud_vpc.foo", &vpc),
-					resource.TestCheckResourceAttr(
-						"alicloud_vpc.foo", "cidr_block", "172.16.0.0/12"),
-				),
-			},
-			resource.TestStep{
-				Config: testAccVpcConfigUpdate,
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckVpcExists("alicloud_vpc.foo", &vpc),
-					resource.TestCheckResourceAttr(
-						"alicloud_vpc.foo", "name", "testAccVpcConfigUpdate"),
-				),
-			},
+func init() {
+	resource.AddTestSweepers("alicloud_vpc", &resource.Sweeper{
+		Name: "alicloud_vpc",
+		F:    testSweepVpcs,
+		// When implemented, these should be removed firstly
+		Dependencies: []string{
+			"alicloud_vswitch",
+			"alicloud_nat_gateway",
+			"alicloud_security_group",
+			"alicloud_ots_instance",
+			"alicloud_router_interface",
+			"alicloud_route_table",
 		},
 	})
 }
 
-func TestAccAlicloudVpc_multi(t *testing.T) {
-	var vpc vpc.DescribeVpcAttributeResponse
+func testSweepVpcs(region string) error {
+	rawClient, err := sharedClientForRegion(region)
+	if err != nil {
+		return fmt.Errorf("error getting Alicloud client: %s", err)
+	}
+	client := rawClient.(*connectivity.AliyunClient)
 
-	resource.Test(t, resource.TestCase{
-		PreCheck: func() {
-			testAccPreCheck(t)
-		},
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckVpcDestroy,
-		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccVpcConfigMulti,
-				Check: resource.ComposeTestCheckFunc(
-					testAccCheckVpcExists("alicloud_vpc.bar_1", &vpc),
-					resource.TestCheckResourceAttr(
-						"alicloud_vpc.bar_1", "cidr_block", "172.16.0.0/12"),
-					testAccCheckVpcExists("alicloud_vpc.bar_2", &vpc),
-					resource.TestCheckResourceAttr(
-						"alicloud_vpc.bar_2", "cidr_block", "192.168.0.0/16"),
-					testAccCheckVpcExists("alicloud_vpc.bar_3", &vpc),
-					resource.TestCheckResourceAttr(
-						"alicloud_vpc.bar_3", "cidr_block", "10.1.0.0/21"),
-				),
-			},
-		},
-	})
+	prefixes := []string{
+		"tf-testAcc",
+		"tf_testAcc",
+		"tf_test_",
+		"tf-test-",
+		"testAcc",
+	}
+
+	var vpcs []vpc.Vpc
+	request := vpc.CreateDescribeVpcsRequest()
+	request.RegionId = client.RegionId
+	request.PageSize = requests.NewInteger(PageSizeLarge)
+	request.PageNumber = requests.NewInteger(1)
+	invoker := NewInvoker()
+	for {
+		var raw interface{}
+		if err := invoker.Run(func() error {
+			raw, err = client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+				return vpcClient.DescribeVpcs(request)
+			})
+			return err
+		}); err != nil {
+			log.Printf("[ERROR] Error retrieving VPCs: %s", WrapError(err))
+		}
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*vpc.DescribeVpcsResponse)
+		if len(response.Vpcs.Vpc) < 1 {
+			break
+		}
+		vpcs = append(vpcs, response.Vpcs.Vpc...)
+
+		if len(response.Vpcs.Vpc) < PageSizeLarge {
+			break
+		}
+
+		if page, err := getNextpageNumber(request.PageNumber); err != nil {
+			log.Printf("[ERROR] %s", WrapError(err))
+		} else {
+			request.PageNumber = page
+		}
+	}
+
+	for _, v := range vpcs {
+		name := v.VpcName
+		id := v.VpcId
+		skip := true
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
+				skip = false
+				break
+			}
+		}
+		if skip {
+			log.Printf("[INFO] Skipping VPC: %s (%s)", name, id)
+			continue
+		}
+		log.Printf("[INFO] Deleting VPC: %s (%s)", name, id)
+		service := VpcService{client}
+		err := service.sweepVpc(id)
+		if err != nil {
+			fmt.Printf("[ERROR] Failed to delete VPC (%s (%s)): %s", name, id, err)
+		}
+	}
+	return nil
 }
 
 func testAccCheckVpcExists(n string, vpc *vpc.DescribeVpcAttributeResponse) resource.TestCheckFunc {
@@ -108,11 +115,12 @@ func testAccCheckVpcExists(n string, vpc *vpc.DescribeVpcAttributeResponse) reso
 			return fmt.Errorf("No VPC ID is set")
 		}
 
-		client := testAccProvider.Meta().(*AliyunClient)
-		instance, err := client.DescribeVpc(rs.Primary.ID)
+		client := testAccProvider.Meta().(*connectivity.AliyunClient)
+		vpcService := VpcService{client}
+		instance, err := vpcService.DescribeVpc(rs.Primary.ID)
 
 		if err != nil {
-			return err
+			return WrapError(err)
 		}
 
 		*vpc = instance
@@ -121,7 +129,8 @@ func testAccCheckVpcExists(n string, vpc *vpc.DescribeVpcAttributeResponse) reso
 }
 
 func testAccCheckVpcDestroy(s *terraform.State) error {
-	client := testAccProvider.Meta().(*AliyunClient)
+	client := testAccProvider.Meta().(*connectivity.AliyunClient)
+	vpcService := VpcService{client}
 
 	for _, rs := range s.RootModule().Resources {
 		if rs.Type != "alicloud_vpc" {
@@ -129,51 +138,192 @@ func testAccCheckVpcDestroy(s *terraform.State) error {
 		}
 
 		// Try to find the VPC
-		instance, err := client.DescribeVpc(rs.Primary.ID)
+		instance, err := vpcService.DescribeVpc(rs.Primary.ID)
 
 		if err != nil {
 			if NotFoundError(err) {
 				continue
 			}
-			return err
+			return WrapError(err)
 		}
-
-		if instance.VpcId != "" {
-			return fmt.Errorf("VPC %s still exist", instance.VpcId)
-		}
+		return WrapError(fmt.Errorf("VPC %s still exist", instance.VpcId))
 	}
 
 	return nil
 }
 
-const testAccVpcConfig = `
-resource "alicloud_vpc" "foo" {
-        name = "testAccVpcConfig"
-        cidr_block = "172.16.0.0/12"
-}
-`
+func TestAccAlicloudVpcBasic(t *testing.T) {
+	var v vpc.DescribeVpcAttributeResponse
+	rand := acctest.RandInt()
+	resourceId := "alicloud_vpc.default"
+	ra := resourceAttrInit(resourceId, testAccCheckVpcCheckMap)
+	serviceFunc := func() interface{} {
+		return &VpcService{testAccProvider.Meta().(*connectivity.AliyunClient)}
+	}
+	rc := resourceCheckInit(resourceId, &v, serviceFunc)
+	rac := resourceAttrCheckInit(rc, ra)
+	testAccCheck := rac.resourceAttrMapUpdateSet()
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+		},
 
-const testAccVpcConfigUpdate = `
-resource "alicloud_vpc" "foo" {
-	cidr_block = "172.16.0.0/12"
-	name = "testAccVpcConfigUpdate"
-}
-`
+		// module name
+		IDRefreshName: resourceId,
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckVpcDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccCheckVpcConfigBasic(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{
+						"name": fmt.Sprintf("tf_testAccVpcConfigName%d", rand),
+					}),
+				),
+			},
+			{
+				Config: testAccCheckVpcConfig_name(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{
+						"name": fmt.Sprintf("tf_testAccVpcConfigName%d_change", rand),
+					}),
+				),
+			},
+			{
+				Config: testAccCheckVpcConfig_description(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{
+						"description": fmt.Sprintf("tf_testAccVpcConfigName%d_decription", rand),
+					}),
+				),
+			},
+			{
+				Config: testAccCheckVpcConfig_all(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{
+						"name":        fmt.Sprintf("tf_testAccVpcConfigName%d_all", rand),
+						"description": fmt.Sprintf("tf_testAccVpcConfigName%d_decription_all", rand),
+					}),
+				),
+			},
+		},
+	})
 
-const testAccVpcConfigMulti = `
-provider "alicloud" {
-	region="cn-shanghai"
 }
-resource "alicloud_vpc" "bar_1" {
+
+func TestAccAlicloudVpcMulti(t *testing.T) {
+	var v vpc.DescribeVpcAttributeResponse
+	rand := acctest.RandInt()
+	resourceId := "alicloud_vpc.default.9"
+	ra := resourceAttrInit(resourceId, testAccCheckVpcCheckMap)
+	serviceFunc := func() interface{} {
+		return &VpcService{testAccProvider.Meta().(*connectivity.AliyunClient)}
+	}
+	rc := resourceCheckInit(resourceId, &v, serviceFunc)
+	rac := resourceAttrCheckInit(rc, ra)
+	testAccCheck := rac.resourceAttrMapUpdateSet()
+	resource.Test(t, resource.TestCase{
+		PreCheck: func() {
+			testAccPreCheck(t)
+		},
+
+		// module name
+		IDRefreshName: resourceId,
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckVpcDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccCheckVpcConfigMulti(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{
+						"name": fmt.Sprintf("tf_testAccVpcConfigName%d", rand),
+					}),
+				),
+			},
+		},
+	})
+
+}
+
+func testAccCheckVpcConfigBasic(rand int) string {
+	return fmt.Sprintf(
+		`
+variable "name" {
+	default = "tf_testAccVpcConfigName%d"
+}
+
+resource "alicloud_vpc" "default" {
+	name = "${var.name}"
 	cidr_block = "172.16.0.0/12"
-	name = "testAccVpcConfigMulti-1"
 }
-resource "alicloud_vpc" "bar_2" {
-	cidr_block = "192.168.0.0/16"
-	name = "testAccVpcConfigMulti-2"
+`, rand)
 }
-resource "alicloud_vpc" "bar_3" {
-	cidr_block = "10.1.0.0/21"
-	name = "testAccVpcConfigMulti-3"
+
+func testAccCheckVpcConfig_name(rand int) string {
+	return fmt.Sprintf(
+		`
+variable "name" {
+	default = "tf_testAccVpcConfigName%d"
 }
-`
+
+resource "alicloud_vpc" "default" {
+	cidr_block = "172.16.0.0/12"
+	name = "${var.name}_change"
+}
+`, rand)
+}
+
+func testAccCheckVpcConfig_description(rand int) string {
+	return fmt.Sprintf(
+		`
+variable "name" {
+	default = "tf_testAccVpcConfigName%d"
+}
+
+resource "alicloud_vpc" "default" {
+	cidr_block = "172.16.0.0/12"
+	name = "${var.name}_change"
+	description = "${var.name}_decription"
+}
+`, rand)
+}
+
+func testAccCheckVpcConfig_all(rand int) string {
+	return fmt.Sprintf(
+		`
+variable "name" {
+	default = "tf_testAccVpcConfigName%d"
+}
+
+resource "alicloud_vpc" "default" {
+	cidr_block = "172.16.0.0/12"
+	name = "${var.name}_all"
+	description = "${var.name}_decription_all"
+}
+`, rand)
+}
+
+func testAccCheckVpcConfigMulti(rand int) string {
+	return fmt.Sprintf(
+		`
+variable "name" {
+	default = "tf_testAccVpcConfigName%d"
+}
+
+resource "alicloud_vpc" "default" {
+	name = "${var.name}"
+	count = 10
+	cidr_block = "172.16.0.0/12"
+}
+`, rand)
+}
+
+var testAccCheckVpcCheckMap = map[string]string{
+	"cidr_block":        "172.16.0.0/12",
+	"name":              "",
+	"description":       "",
+	"resource_group_id": CHECKSET,
+	"router_id":         CHECKSET,
+	"router_table_id":   CHECKSET,
+	"route_table_id":    CHECKSET,
+}

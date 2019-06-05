@@ -15,14 +15,15 @@ func TestAccAlicloudOssBucket_importBasic(t *testing.T) {
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckOssBucketDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccAlicloudOssBucketBasicConfig(acctest.RandInt()),
 			},
 
-			resource.TestStep{
-				ResourceName:      resourceName,
-				ImportState:       true,
-				ImportStateVerify: true,
+			{
+				ResourceName:            resourceName,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"force_destroy"},
 			},
 		},
 	})
@@ -36,14 +37,15 @@ func TestAccAlicloudOssBucket_importCors(t *testing.T) {
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckOssBucketDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccAlicloudOssBucketCorsConfig(acctest.RandInt()),
 			},
 
-			resource.TestStep{
-				ResourceName:      resourceName,
-				ImportState:       true,
-				ImportStateVerify: true,
+			{
+				ResourceName:            resourceName,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"force_destroy"},
 			},
 		},
 	})
@@ -57,14 +59,15 @@ func TestAccAlicloudOssBucket_importWebsite(t *testing.T) {
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckOssBucketDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccAlicloudOssBucketWebsiteConfig(acctest.RandInt()),
 			},
 
-			resource.TestStep{
-				ResourceName:      resourceName,
-				ImportState:       true,
-				ImportStateVerify: true,
+			{
+				ResourceName:            resourceName,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"force_destroy"},
 			},
 		},
 	})
@@ -77,14 +80,15 @@ func TestAccAlicloudOssBucket_importLogging(t *testing.T) {
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckOssBucketDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccAlicloudOssBucketLoggingConfig(acctest.RandInt()),
 			},
 
-			resource.TestStep{
-				ResourceName:      resourceName,
-				ImportState:       true,
-				ImportStateVerify: true,
+			{
+				ResourceName:            resourceName,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"force_destroy"},
 			},
 		},
 	})
@@ -98,14 +102,15 @@ func TestAccAlicloudOssBucket_importReferer(t *testing.T) {
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckOssBucketDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccAlicloudOssBucketRefererConfig(acctest.RandInt()),
 			},
 
-			resource.TestStep{
-				ResourceName:      resourceName,
-				ImportState:       true,
-				ImportStateVerify: true,
+			{
+				ResourceName:            resourceName,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"force_destroy"},
 			},
 		},
 	})
@@ -118,14 +123,15 @@ func TestAccAlicloudOssBucket_importLifecycle(t *testing.T) {
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckOssBucketDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccAlicloudOssBucketLifecycleConfig(acctest.RandInt()),
 			},
 
-			resource.TestStep{
-				ResourceName:      resourceName,
-				ImportState:       true,
-				ImportStateVerify: true,
+			{
+				ResourceName:            resourceName,
+				ImportState:             true,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"force_destroy"},
 			},
 		},
 	})

@@ -8,10 +8,11 @@ import (
 
 	"bytes"
 
-	"github.com/aliyun/aliyun-log-go-sdk"
+	sls "github.com/aliyun/aliyun-log-go-sdk"
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudLogStoreIndex() *schema.Resource {
@@ -25,18 +26,18 @@ func resourceAlicloudLogStoreIndex() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"project": &schema.Schema{
+			"project": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"logstore": &schema.Schema{
+			"logstore": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
 
-			"full_text": &schema.Schema{
+			"full_text": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
@@ -63,7 +64,7 @@ func resourceAlicloudLogStoreIndex() *schema.Resource {
 				MaxItems: 1,
 			},
 			//field search
-			"field_search": &schema.Schema{
+			"field_search": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
@@ -117,7 +118,8 @@ func resourceAlicloudLogStoreIndex() *schema.Resource {
 }
 
 func resourceAlicloudLogStoreIndexCreate(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	logService := LogService{client}
 
 	_, fullOk := d.GetOk("full_text")
 	_, fieldOk := d.GetOk("field_search")
@@ -126,18 +128,26 @@ func resourceAlicloudLogStoreIndexCreate(d *schema.ResourceData, meta interface{
 	}
 
 	project := d.Get("project").(string)
-	store, err := client.DescribeLogStore(project, d.Get("logstore").(string))
+	store, err := logService.DescribeLogStore(project, d.Get("logstore").(string))
 	if err != nil {
 		return fmt.Errorf("DescribeLogStore got an error: %#v.", err)
 	}
-	exist, err := store.GetIndex()
-	if err != nil && !IsExceptedErrors(err, []string{IndexConfigNotExist}) {
-		return fmt.Errorf("While Creating index, GetIndex got an error: %#v.", err)
-	}
 
-	if exist != nil {
-		return fmt.Errorf("There is aleady existing an index in the store %s. Please import it using id '%s%s%s'.",
-			store.Name, project, COLON_SEPARATED, store.Name)
+	invoker := NewInvoker()
+	invoker.AddCatcher(SlsClientTimeoutCatcher)
+	if err := invoker.Run(func() error {
+		exist, err := store.GetIndex()
+		if err != nil && !IsExceptedErrors(err, []string{IndexConfigNotExist}) {
+			return fmt.Errorf("While Creating index, GetIndex got an error: %s.", err)
+		}
+
+		if exist != nil {
+			return fmt.Errorf("There is aleady existing an index in the store %s. Please import it using id '%s%s%s'.",
+				store.Name, project, COLON_SEPARATED, store.Name)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
 	var index sls.Index
@@ -151,10 +161,10 @@ func resourceAlicloudLogStoreIndexCreate(d *schema.ResourceData, meta interface{
 	if err := resource.Retry(2*time.Minute, func() *resource.RetryError {
 
 		if e := store.CreateIndex(index); e != nil {
-			if IsExceptedErrors(err, []string{InternalServerError}) {
-				return resource.RetryableError(fmt.Errorf("CreateLogStoreIndex timeout and got an error: %#v.", err))
+			if IsExceptedErrors(err, []string{InternalServerError, LogClientTimeout}) {
+				return resource.RetryableError(fmt.Errorf("CreateLogStoreIndex timeout and got an error: %s.", err))
 			}
-			return resource.NonRetryableError(fmt.Errorf("CreateLogStoreIndex got an error: %#v.", err))
+			return resource.NonRetryableError(fmt.Errorf("CreateLogStoreIndex got an error: %s.", err))
 		}
 		return nil
 	}); err != nil {
@@ -167,9 +177,11 @@ func resourceAlicloudLogStoreIndexCreate(d *schema.ResourceData, meta interface{
 }
 
 func resourceAlicloudLogStoreIndexRead(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*connectivity.AliyunClient)
+	logService := LogService{client}
 	split := strings.Split(d.Id(), COLON_SEPARATED)
 
-	index, err := meta.(*AliyunClient).DescribeLogStoreIndex(split[0], split[1])
+	index, err := logService.DescribeLogStoreIndex(split[0], split[1])
 
 	if err != nil {
 		if NotFoundError(err) {
@@ -215,49 +227,58 @@ func resourceAlicloudLogStoreIndexRead(d *schema.ResourceData, meta interface{})
 }
 
 func resourceAlicloudLogStoreIndexUpdate(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
 
 	split := strings.Split(d.Id(), COLON_SEPARATED)
-	d.Partial(true)
 
 	update := false
 	var index sls.Index
 	if d.HasChange("full_text") {
 		index.Line = buildIndexLine(d)
 		update = true
-		d.SetPartial("full_text")
 	}
 	if d.HasChange("field_search") {
 		index.Keys = buildIndexKeys(d)
 		update = true
-		d.SetPartial("field_search")
 	}
 
 	if update {
-
-		if err := client.logconn.UpdateIndex(split[0], split[1], index); err != nil {
-			return fmt.Errorf("UpdateLogStoreIndex got an error: %#v.", err)
+		invoker := NewInvoker()
+		invoker.AddCatcher(SlsClientTimeoutCatcher)
+		if err := invoker.Run(func() error {
+			_, err := client.WithLogClient(func(slsClient *sls.Client) (interface{}, error) {
+				return nil, slsClient.UpdateIndex(split[0], split[1], index)
+			})
+			return err
+		}); err != nil {
+			return fmt.Errorf("UpdateLogStoreIndex got an error: %s.", err)
 		}
 	}
-	d.Partial(false)
 
 	return resourceAlicloudLogStoreIndexRead(d, meta)
 }
 
 func resourceAlicloudLogStoreIndexDelete(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	logService := LogService{client}
 
 	split := strings.Split(d.Id(), COLON_SEPARATED)
 
-	if _, err := client.DescribeLogStoreIndex(split[0], split[1]); err != nil {
+	if _, err := logService.DescribeLogStoreIndex(split[0], split[1]); err != nil {
 		if NotFoundError(err) {
 			return nil
 		}
-		return fmt.Errorf("While deleting index, GetIndex got an error: %#v.", err)
+		return fmt.Errorf("While deleting index, GetIndex got an error: %s.", err)
 	}
-
-	if err := client.logconn.DeleteIndex(split[0], split[1]); err != nil {
-		return fmt.Errorf("DeleteIndex got an error: %#v.", err)
+	invoker := NewInvoker()
+	invoker.AddCatcher(SlsClientTimeoutCatcher)
+	if err := invoker.Run(func() error {
+		_, err := client.WithLogClient(func(slsClient *sls.Client) (interface{}, error) {
+			return nil, slsClient.DeleteIndex(split[0], split[1])
+		})
+		return err
+	}); err != nil {
+		return fmt.Errorf("DeleteIndex got an error: %s.", err)
 	}
 	return nil
 }

@@ -4,21 +4,25 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform/helper/resource"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func TestAccAlicloudSecurityGroup_importBasic(t *testing.T) {
-	resourceName := "alicloud_security_group.foo"
+	resourceName := "alicloud_security_group.default"
 
 	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
+		PreCheck: func() {
+			testAccPreCheckWithRegions(t, true, connectivity.EcsClassicSupportedRegions)
+			testAccPreCheckWithAccountSiteType(t, DomesticSite)
+		},
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSecurityGroupDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccSecurityGroupConfig,
+			{
+				Config: testAccCheckSecurityGroupConfigBasic,
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,
@@ -28,18 +32,18 @@ func TestAccAlicloudSecurityGroup_importBasic(t *testing.T) {
 }
 
 func TestAccAlicloudSecurityGroup_importWithVpc(t *testing.T) {
-	resourceName := "alicloud_security_group.foo"
+	resourceName := "alicloud_security_group.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSecurityGroupDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccSecurityGroupConfig_withVpc,
+			{
+				Config: testAccCheckSecurityGroupConfigBasic,
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,

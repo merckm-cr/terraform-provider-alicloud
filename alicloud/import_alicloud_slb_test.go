@@ -6,19 +6,19 @@ import (
 	"github.com/hashicorp/terraform/helper/resource"
 )
 
-func TestAccAlicloudSlb_importBandwidth(t *testing.T) {
-	resourceName := "alicloud_slb.bandwidth"
+func TestAccAlicloudSlb_import(t *testing.T) {
+	resourceName := "alicloud_slb.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSlbDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccSlbBandWidth,
+			{
+				Config: testAccSlbVpc,
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,
@@ -26,41 +26,19 @@ func TestAccAlicloudSlb_importBandwidth(t *testing.T) {
 		},
 	})
 }
-
-func TestAccAlicloudSlb_importTraffic(t *testing.T) {
-	resourceName := "alicloud_slb.traffic"
-
-	resource.Test(t, resource.TestCase{
-		PreCheck:     func() { testAccPreCheck(t) },
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckSlbDestroy,
-		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccSlbTraffic,
-			},
-
-			resource.TestStep{
-				ResourceName:      resourceName,
-				ImportState:       true,
-				ImportStateVerify: true,
-			},
-		},
-	})
-}
-
-func TestAccAlicloudSlb_importVpc(t *testing.T) {
-	resourceName := "alicloud_slb.vpc"
+func TestAccAlicloudSlbShare_import(t *testing.T) {
+	resourceName := "alicloud_slb.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSlbDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccSlb4Vpc,
+			{
+				Config: testAccSlbVpc_no_specification,
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,

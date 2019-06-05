@@ -1,12 +1,12 @@
 package alicloud
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/vpc"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAliyunSubnet() *schema.Resource {
@@ -20,27 +20,27 @@ func resourceAliyunSubnet() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"availability_zone": &schema.Schema{
+			"availability_zone": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"vpc_id": &schema.Schema{
+			"vpc_id": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"cidr_block": &schema.Schema{
+			"cidr_block": {
 				Type:         schema.TypeString,
 				Required:     true,
 				ForceNew:     true,
 				ValidateFunc: validateSwitchCIDRNetworkAddress,
 			},
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-			"description": &schema.Schema{
+			"description": {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
@@ -49,50 +49,51 @@ func resourceAliyunSubnet() *schema.Resource {
 }
 
 func resourceAliyunSwitchCreate(d *schema.ResourceData, meta interface{}) error {
-
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	vpcService := VpcService{client}
 
 	var vswitchID string
-	if err := resource.Retry(3*time.Minute, func() *resource.RetryError {
-		args, err := buildAliyunSwitchArgs(d, meta)
+	request, err := buildAliyunSwitchArgs(d, meta)
+	if err != nil {
+		return WrapError(err)
+	}
+	if err := resource.Retry(5*time.Minute, func() *resource.RetryError {
+		args := *request
+		raw, err := client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+			return vpcClient.CreateVSwitch(&args)
+		})
 		if err != nil {
-			return resource.NonRetryableError(fmt.Errorf("Building CreateVSwitchArgs got an error: %#v", err))
-		}
-		resp, err := client.vpcconn.CreateVSwitch(args)
-		if err != nil {
-			if IsExceptedError(err, TaskConflict) ||
-				IsExceptedError(err, UnknownError) ||
-				IsExceptedError(err, InvalidStatusRouteEntry) ||
-				IsExceptedError(err, InvalidCidrBlockOverlapped) {
-				return resource.RetryableError(fmt.Errorf("Creating Vswitch got an error: %#v", err))
+			if IsExceptedErrors(err, []string{TaskConflict, UnknownError, InvalidStatusRouteEntry,
+				InvalidCidrBlockOverlapped, Throttling, TokenProcessing}) {
+				time.Sleep(5 * time.Second)
+				return resource.RetryableError(err)
 			}
 			return resource.NonRetryableError(err)
 		}
-		vswitchID = resp.VSwitchId
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*vpc.CreateVSwitchResponse)
+		vswitchID = response.VSwitchId
 		return nil
 	}); err != nil {
-		return err
+		return WrapErrorf(err, DefaultErrorMsg, "alicloud_vswitch", request.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
-
 	d.SetId(vswitchID)
-
-	if err := client.WaitForVSwitch(vswitchID, Available, 300); err != nil {
-		return fmt.Errorf("WaitForVSwitchAvailable got a error: %s", err)
+	if err := vpcService.WaitForVSwitch(vswitchID, Available, DefaultTimeoutMedium); err != nil {
+		return WrapError(err)
 	}
-
-	return resourceAliyunSwitchUpdate(d, meta)
+	return resourceAliyunSwitchRead(d, meta)
 }
 
 func resourceAliyunSwitchRead(d *schema.ResourceData, meta interface{}) error {
-
-	vswitch, err := meta.(*AliyunClient).DescribeVswitch(d.Id())
-
+	client := meta.(*connectivity.AliyunClient)
+	vpcService := VpcService{client}
+	vswitch, err := vpcService.DescribeVSwitch(d.Id())
 	if err != nil {
 		if NotFoundError(err) {
 			d.SetId("")
 			return nil
 		}
-		return err
+		return WrapError(err)
 	}
 
 	d.Set("availability_zone", vswitch.ZoneId)
@@ -105,45 +106,43 @@ func resourceAliyunSwitchRead(d *schema.ResourceData, meta interface{}) error {
 }
 
 func resourceAliyunSwitchUpdate(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*connectivity.AliyunClient)
 
-	d.Partial(true)
-
-	attributeUpdate := false
+	update := false
 	request := vpc.CreateModifyVSwitchAttributeRequest()
 	request.VSwitchId = d.Id()
 
 	if d.HasChange("name") {
-		d.SetPartial("name")
 		request.VSwitchName = d.Get("name").(string)
-
-		attributeUpdate = true
+		update = true
 	}
 
 	if d.HasChange("description") {
-		d.SetPartial("description")
 		request.Description = d.Get("description").(string)
-
-		attributeUpdate = true
+		update = true
 	}
-	if attributeUpdate {
-		if _, err := meta.(*AliyunClient).vpcconn.ModifyVSwitchAttribute(request); err != nil {
-			return err
+	if update {
+		raw, err := client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+			return vpcClient.ModifyVSwitchAttribute(request)
+		})
+		if err != nil {
+			return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
-
+		addDebug(request.GetActionName(), raw)
 	}
-
-	d.Partial(false)
-
 	return resourceAliyunSwitchRead(d, meta)
 }
 
 func resourceAliyunSwitchDelete(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
-
+	client := meta.(*connectivity.AliyunClient)
+	vpcService := VpcService{client}
 	request := vpc.CreateDeleteVSwitchRequest()
 	request.VSwitchId = d.Id()
-	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		if _, err := client.vpcconn.DeleteVSwitch(request); err != nil {
+	err := resource.Retry(6*time.Minute, func() *resource.RetryError {
+		raw, err := client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+			return vpcClient.DeleteVSwitch(request)
+		})
+		if err != nil {
 			if IsExceptedError(err, VswitcInvalidRegionId) {
 				return resource.NonRetryableError(err)
 			}
@@ -151,36 +150,29 @@ func resourceAliyunSwitchDelete(d *schema.ResourceData, meta interface{}) error 
 				return nil
 			}
 
-			return resource.RetryableError(fmt.Errorf("Delete vswitch timeout and got an error: %#v.", err))
+			return resource.RetryableError(err)
 		}
-
-		if _, err := client.DescribeVswitch(d.Id()); err != nil {
-			if NotFoundError(err) {
-				return nil
-			}
-			return resource.NonRetryableError(err)
-		}
-
+		addDebug(request.GetActionName(), raw)
 		return nil
 	})
+	if err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
+	}
+	return WrapError(vpcService.WaitForVSwitch(d.Id(), Deleted, DefaultTimeout))
 }
 
 func buildAliyunSwitchArgs(d *schema.ResourceData, meta interface{}) (*vpc.CreateVSwitchRequest, error) {
-
-	client := meta.(*AliyunClient)
-
+	client := meta.(*connectivity.AliyunClient)
+	ecsService := EcsService{client}
 	zoneID := Trim(d.Get("availability_zone").(string))
-
-	zone, err := client.DescribeZone(zoneID)
+	zone, err := ecsService.DescribeZone(zoneID)
 	if err != nil {
-		return nil, err
+		return nil, WrapError(err)
 	}
-
-	err = client.ResourceAvailable(zone, ResourceTypeVSwitch)
+	err = ecsService.ResourceAvailable(zone, ResourceTypeVSwitch)
 	if err != nil {
-		return nil, err
+		return nil, WrapError(err)
 	}
-
 	request := vpc.CreateCreateVSwitchRequest()
 	request.VpcId = Trim(d.Get("vpc_id").(string))
 	request.ZoneId = zoneID
@@ -193,6 +185,7 @@ func buildAliyunSwitchArgs(d *schema.ResourceData, meta interface{}) (*vpc.Creat
 	if v, ok := d.GetOk("description"); ok && v != "" {
 		request.Description = v.(string)
 	}
+	request.ClientToken = buildClientToken(request.GetActionName())
 
 	return request, nil
 }

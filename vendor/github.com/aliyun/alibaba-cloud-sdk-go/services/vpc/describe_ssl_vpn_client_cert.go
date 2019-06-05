@@ -76,10 +76,10 @@ func (client *Client) DescribeSslVpnClientCertWithCallback(request *DescribeSslV
 // DescribeSslVpnClientCertRequest is the request struct for api DescribeSslVpnClientCert
 type DescribeSslVpnClientCertRequest struct {
 	*requests.RpcRequest
+	ResourceOwnerId      requests.Integer `position:"Query" name:"ResourceOwnerId"`
+	ResourceOwnerAccount string           `position:"Query" name:"ResourceOwnerAccount"`
 	OwnerAccount         string           `position:"Query" name:"OwnerAccount"`
 	OwnerId              requests.Integer `position:"Query" name:"OwnerId"`
-	ResourceOwnerAccount string           `position:"Query" name:"ResourceOwnerAccount"`
-	ResourceOwnerId      requests.Integer `position:"Query" name:"ResourceOwnerId"`
 	SslVpnClientCertId   string           `position:"Query" name:"SslVpnClientCertId"`
 }
 
@@ -95,8 +95,8 @@ type DescribeSslVpnClientCertResponse struct {
 	ClientCert         string `json:"ClientCert" xml:"ClientCert"`
 	ClientKey          string `json:"ClientKey" xml:"ClientKey"`
 	ClientConfig       string `json:"ClientConfig" xml:"ClientConfig"`
-	CreateTime         int    `json:"CreateTime" xml:"CreateTime"`
-	EndTime            int    `json:"EndTime" xml:"EndTime"`
+	CreateTime         int64  `json:"CreateTime" xml:"CreateTime"`
+	EndTime            int64  `json:"EndTime" xml:"EndTime"`
 	Status             string `json:"Status" xml:"Status"`
 }
 

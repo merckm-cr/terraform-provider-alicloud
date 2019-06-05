@@ -5,10 +5,18 @@ import (
 	"strings"
 	"time"
 
+	"regexp"
+
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/rds"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
+
+const dbConnectionSuffixRegex = "\\.mysql\\.([a-zA-Z0-9\\-]+\\.){0,1}rds\\.aliyuncs\\.com"
+const dbConnectionIdWithSuffixRegex = "^([a-zA-Z0-9\\-_]+:[a-zA-Z0-9\\-_]+)" + dbConnectionSuffixRegex + "$"
+
+var dbConnectionIdWithSuffixRegexp = regexp.MustCompile(dbConnectionIdWithSuffixRegex)
 
 func resourceAlicloudDBConnection() *schema.Resource {
 	return &schema.Resource{
@@ -21,29 +29,29 @@ func resourceAlicloudDBConnection() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"instance_id": &schema.Schema{
+			"instance_id": {
 				Type:     schema.TypeString,
 				ForceNew: true,
 				Required: true,
 			},
-			"connection_prefix": &schema.Schema{
+			"connection_prefix": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Computed:     true,
 				ForceNew:     true,
 				ValidateFunc: validateDBConnectionPrefix,
 			},
-			"port": &schema.Schema{
+			"port": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ValidateFunc: validateDBConnectionPort,
 				Default:      "3306",
 			},
-			"connection_string": &schema.Schema{
+			"connection_string": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
-			"ip_address": &schema.Schema{
+			"ip_address": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
@@ -52,126 +60,173 @@ func resourceAlicloudDBConnection() *schema.Resource {
 }
 
 func resourceAlicloudDBConnectionCreate(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
-	instance_id := d.Get("instance_id").(string)
-	prefix, ok := d.GetOk("connection_prefix")
-	if !ok || prefix.(string) == "" {
-		prefix = fmt.Sprintf("%stf", instance_id)
+	client := meta.(*connectivity.AliyunClient)
+	rdsService := RdsService{client}
+	instanceId := d.Get("instance_id").(string)
+	prefix := d.Get("connection_prefix").(string)
+	if prefix == "" {
+		prefix = fmt.Sprintf("%stf", instanceId)
 	}
 
-	if err := client.AllocateDBPublicConnection(instance_id, prefix.(string), d.Get("port").(string)); err != nil {
-		return fmt.Errorf("AllocateInstancePublicConnection got an error: %#v", err)
+	request := rds.CreateAllocateInstancePublicConnectionRequest()
+	request.DBInstanceId = instanceId
+	request.ConnectionStringPrefix = prefix
+	request.Port = d.Get("port").(string)
+	var raw interface{}
+	var err error
+	err = resource.Retry(8*time.Minute, func() *resource.RetryError {
+		raw, err = client.WithRdsClient(func(rdsClient *rds.Client) (interface{}, error) {
+			return rdsClient.AllocateInstancePublicConnection(request)
+		})
+		if err != nil {
+			if IsExceptedErrors(err, OperationDeniedDBStatus) {
+				return resource.RetryableError(err)
+			}
+
+			return resource.NonRetryableError(err)
+		}
+		addDebug(request.GetActionName(), raw)
+		return nil
+	})
+
+	if err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, "alicloud_db_connection", request.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
 
-	d.SetId(fmt.Sprintf("%s%s%s", instance_id, COLON_SEPARATED, prefix.(string)))
+	d.SetId(fmt.Sprintf("%s%s%s", instanceId, COLON_SEPARATED, request.ConnectionStringPrefix))
 
-	return resourceAlicloudDBConnectionUpdate(d, meta)
+	if err := rdsService.WaitForDBConnection(d.Id(), Available, DefaultTimeoutMedium); err != nil {
+		return WrapError(err)
+	}
+	// wait instance running after allocating
+	if err := rdsService.WaitForDBInstance(instanceId, Running, DefaultTimeoutMedium); err != nil {
+		return WrapError(err)
+	}
+
+	return resourceAlicloudDBConnectionRead(d, meta)
 }
 
 func resourceAlicloudDBConnectionRead(d *schema.ResourceData, meta interface{}) error {
-	if strings.HasSuffix(d.Id(), DBConnectionSuffix) {
-		d.SetId(strings.Replace(d.Id(), DBConnectionSuffix, "", -1))
+	submatch := dbConnectionIdWithSuffixRegexp.FindStringSubmatch(d.Id())
+	if len(submatch) > 1 {
+		d.SetId(submatch[1])
 	}
 
-	parts := strings.Split(d.Id(), COLON_SEPARATED)
-
-	conn, err := meta.(*AliyunClient).DescribeDBInstanceNetInfoByIpType(parts[0], Public)
+	client := meta.(*connectivity.AliyunClient)
+	rdsService := RdsService{client}
+	object, err := rdsService.DescribeDBConnection(d.Id())
 
 	if err != nil {
-		if NotFoundDBInstance(err) {
+		if rdsService.NotFoundDBInstance(err) {
 			d.SetId("")
 			return nil
 		}
-		return err
+		return WrapError(err)
 	}
-
+	parts, err := ParseResourceId(d.Id(), 2)
+	if err != nil {
+		return WrapError(err)
+	}
 	d.Set("instance_id", parts[0])
 	d.Set("connection_prefix", parts[1])
-	d.Set("port", conn.Port)
-	d.Set("connection_string", conn.ConnectionString)
-	d.Set("ip_address", conn.IPAddress)
+	d.Set("port", object.Port)
+	d.Set("connection_string", object.ConnectionString)
+	d.Set("ip_address", object.IPAddress)
 
 	return nil
 }
 
 func resourceAlicloudDBConnectionUpdate(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
-	d.Partial(true)
+	client := meta.(*connectivity.AliyunClient)
+	rdsService := RdsService{client}
 
-	if strings.HasSuffix(d.Id(), DBConnectionSuffix) {
-		d.SetId(strings.Replace(d.Id(), DBConnectionSuffix, "", -1))
+	submatch := dbConnectionIdWithSuffixRegexp.FindStringSubmatch(d.Id())
+	if len(submatch) > 1 {
+		d.SetId(submatch[1])
 	}
 
-	parts := strings.Split(d.Id(), COLON_SEPARATED)
+	parts, err := ParseResourceId(d.Id(), 2)
+	if err != nil {
+		return WrapError(err)
+	}
 
-	if d.HasChange("port") && !d.IsNewResource() {
+	if d.HasChange("port") {
 		request := rds.CreateModifyDBInstanceConnectionStringRequest()
 		request.DBInstanceId = parts[0]
-		request.CurrentConnectionString = fmt.Sprintf("%s%s", parts[1], DBConnectionSuffix)
+		object, err := rdsService.DescribeDBConnection(d.Id())
+		if err != nil {
+			return WrapError(err)
+		}
+		request.CurrentConnectionString = object.ConnectionString
 		request.ConnectionStringPrefix = parts[1]
 		request.Port = d.Get("port").(string)
-
-		// wait instance running before modifying
-		if err := client.WaitForDBInstance(request.DBInstanceId, Running, 500); err != nil {
-			return fmt.Errorf("WaitForInstance %s got error: %#v", Running, err)
-		}
-
-		if err := resource.Retry(3*time.Minute, func() *resource.RetryError {
-			if _, err := client.rdsconn.ModifyDBInstanceConnectionString(request); err != nil {
+		if err := resource.Retry(8*time.Minute, func() *resource.RetryError {
+			raw, err := client.WithRdsClient(func(rdsClient *rds.Client) (interface{}, error) {
+				return rdsClient.ModifyDBInstanceConnectionString(request)
+			})
+			if err != nil {
 				if IsExceptedErrors(err, OperationDeniedDBStatus) {
-					return resource.RetryableError(fmt.Errorf("Modify DBInstance Connection Port got an error: %#v.", err))
+					return resource.RetryableError(err)
 				}
-				return resource.NonRetryableError(fmt.Errorf("Modify DBInstance Connection Port got an error: %#v.", err))
+				return resource.NonRetryableError(err)
 			}
+			addDebug(request.GetActionName(), raw)
 			return nil
 		}); err != nil {
-			return err
+			return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
 
 		// wait instance running after modifying
-		if err := client.WaitForDBInstance(request.DBInstanceId, Running, 500); err != nil {
-			return fmt.Errorf("WaitForInstance %s got error: %#v", Running, err)
+		if err := rdsService.WaitForDBInstance(request.DBInstanceId, Running, DefaultTimeoutMedium); err != nil {
+			return WrapError(err)
 		}
-
-		d.SetPartial("port")
-
 	}
-
-	d.Partial(false)
 	return resourceAlicloudDBConnectionRead(d, meta)
 }
 
 func resourceAlicloudDBConnectionDelete(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
-	if strings.HasSuffix(d.Id(), DBConnectionSuffix) {
-		d.SetId(strings.Replace(d.Id(), DBConnectionSuffix, "", -1))
+	client := meta.(*connectivity.AliyunClient)
+	rdsService := RdsService{client}
+
+	submatch := dbConnectionIdWithSuffixRegexp.FindStringSubmatch(d.Id())
+	if len(submatch) > 1 {
+		d.SetId(submatch[1])
 	}
 
-	parts := strings.Split(d.Id(), COLON_SEPARATED)
+	split := strings.Split(d.Id(), COLON_SEPARATED)
+	request := rds.CreateReleaseInstancePublicConnectionRequest()
+	request.DBInstanceId = split[0]
 
-	return resource.Retry(3*time.Minute, func() *resource.RetryError {
-		err := client.ReleaseDBPublicConnection(parts[0], fmt.Sprintf("%s%s", parts[1], DBConnectionSuffix))
-
+	err := resource.Retry(5*time.Minute, func() *resource.RetryError {
+		object, err := rdsService.DescribeDBConnection(d.Id())
 		if err != nil {
-			if IsExceptedError(err, InvalidCurrentConnectionStringNotFound) || IsExceptedError(err, AtLeastOneNetTypeExists) {
+			if rdsService.NotFoundDBInstance(err) {
 				return nil
 			}
-			return resource.RetryableError(fmt.Errorf("Release DB connection timeout and got an error: %#v.", err))
+			return resource.NonRetryableError(WrapError(err))
 		}
-		conn, err := meta.(*AliyunClient).DescribeDBInstanceNetInfoByIpType(parts[0], Public)
+		request.CurrentConnectionString = object.ConnectionString
+		var raw interface{}
+		raw, err = client.WithRdsClient(func(rdsClient *rds.Client) (interface{}, error) {
+			return rdsClient.ReleaseInstancePublicConnection(request)
+		})
 
 		if err != nil {
-			if NotFoundDBInstance(err) || IsExceptedError(err, InvalidCurrentConnectionStringNotFound) {
+			if IsExceptedErrors(err, []string{InvalidCurrentConnectionStringNotFound, AtLeastOneNetTypeExists}) {
 				return nil
 			}
-			return resource.NonRetryableError(fmt.Errorf("Release DB connection got an error: %#v.", err))
+			if IsExceptedErrors(err, []string{OperationDeniedDBInstanceStatus}) {
+				return resource.RetryableError(err)
+			}
+			return resource.NonRetryableError(err)
 		}
-
-		if conn == nil {
-			d.SetId("")
-			return nil
-		}
-
-		return resource.RetryableError(fmt.Errorf("Release DB connection timeout."))
+		addDebug(request.GetActionName(), raw)
+		return nil
 	})
+
+	if err != nil {
+		return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
+	}
+
+	return rdsService.WaitForDBConnection(d.Id(), Deleted, DefaultTimeoutMedium)
 }

@@ -76,20 +76,43 @@ func (client *Client) CreateScalingGroupWithCallback(request *CreateScalingGroup
 // CreateScalingGroupRequest is the request struct for api CreateScalingGroup
 type CreateScalingGroupRequest struct {
 	*requests.RpcRequest
-	OwnerId              requests.Integer `position:"Query" name:"OwnerId"`
-	ResourceOwnerAccount string           `position:"Query" name:"ResourceOwnerAccount"`
-	ScalingGroupName     string           `position:"Query" name:"ScalingGroupName"`
-	MinSize              requests.Integer `position:"Query" name:"MinSize"`
-	MaxSize              requests.Integer `position:"Query" name:"MaxSize"`
-	DefaultCooldown      requests.Integer `position:"Query" name:"DefaultCooldown"`
-	LoadBalancerIds      string           `position:"Query" name:"LoadBalancerIds"`
-	DBInstanceIds        string           `position:"Query" name:"DBInstanceIds"`
-	RemovalPolicy1       string           `position:"Query" name:"RemovalPolicy.1"`
-	RemovalPolicy2       string           `position:"Query" name:"RemovalPolicy.2"`
-	OwnerAccount         string           `position:"Query" name:"OwnerAccount"`
-	VSwitchId            string           `position:"Query" name:"VSwitchId"`
-	VSwitchIds           *[]string        `position:"Query" name:"VSwitchIds"  type:"Repeated"`
-	MultiAZPolicy        string           `position:"Query" name:"MultiAZPolicy"`
+	MultiAZPolicy         string                             `position:"Query" name:"MultiAZPolicy"`
+	DBInstanceIds         string                             `position:"Query" name:"DBInstanceIds"`
+	LaunchTemplateId      string                             `position:"Query" name:"LaunchTemplateId"`
+	LoadBalancerIds       string                             `position:"Query" name:"LoadBalancerIds"`
+	HealthCheckType       string                             `position:"Query" name:"HealthCheckType"`
+	ResourceOwnerAccount  string                             `position:"Query" name:"ResourceOwnerAccount"`
+	ScalingGroupName      string                             `position:"Query" name:"ScalingGroupName"`
+	ClientToken           string                             `position:"Query" name:"ClientToken"`
+	VSwitchIds            *[]string                          `position:"Query" name:"VSwitchIds"  type:"Repeated"`
+	OwnerAccount          string                             `position:"Query" name:"OwnerAccount"`
+	MinSize               requests.Integer                   `position:"Query" name:"MinSize"`
+	OwnerId               requests.Integer                   `position:"Query" name:"OwnerId"`
+	LaunchTemplateVersion string                             `position:"Query" name:"LaunchTemplateVersion"`
+	ScalingPolicy         string                             `position:"Query" name:"ScalingPolicy"`
+	VSwitchId             string                             `position:"Query" name:"VSwitchId"`
+	MaxSize               requests.Integer                   `position:"Query" name:"MaxSize"`
+	LifecycleHook         *[]CreateScalingGroupLifecycleHook `position:"Query" name:"LifecycleHook"  type:"Repeated"`
+	DefaultCooldown       requests.Integer                   `position:"Query" name:"DefaultCooldown"`
+	RemovalPolicy1        string                             `position:"Query" name:"RemovalPolicy.1"`
+	VServerGroup          *[]CreateScalingGroupVServerGroup  `position:"Query" name:"VServerGroup"  type:"Repeated"`
+	RemovalPolicy2        string                             `position:"Query" name:"RemovalPolicy.2"`
+}
+
+// CreateScalingGroupLifecycleHook is a repeated param struct in CreateScalingGroupRequest
+type CreateScalingGroupLifecycleHook struct {
+	DefaultResult        string `name:"DefaultResult"`
+	LifecycleHookName    string `name:"LifecycleHookName"`
+	HeartbeatTimeout     string `name:"HeartbeatTimeout"`
+	NotificationArn      string `name:"NotificationArn"`
+	NotificationMetadata string `name:"NotificationMetadata"`
+	LifecycleTransition  string `name:"LifecycleTransition"`
+}
+
+// CreateScalingGroupVServerGroup is a repeated param struct in CreateScalingGroupRequest
+type CreateScalingGroupVServerGroup struct {
+	LoadBalancerId        string    `name:"LoadBalancerId"`
+	VServerGroupAttribute *[]string `name:"VServerGroupAttribute" type:"Repeated"`
 }
 
 // CreateScalingGroupResponse is the response struct for api CreateScalingGroup

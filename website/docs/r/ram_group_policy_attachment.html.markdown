@@ -15,23 +15,23 @@ Provides a RAM Group Policy attachment resource.
 ```
 # Create a RAM Group Policy attachment.
 resource "alicloud_ram_group" "group" {
-  name = "test_group"
+  name = "groupName"
   comments = "this is a group comments."
   force = true
 }
 
 resource "alicloud_ram_policy" "policy" {
-  name = "test_policy"
+  name = "policyName"
   statement = [
-      {
-        effect = "Allow"
-        action = [
-          "oss:ListObjects",
-          "oss:GetObject"]
-        resource = [
-          "acs:oss:*:*:mybucket",
-          "acs:oss:*:*:mybucket/*"]
-      }]
+    {
+      effect = "Allow"
+      action = [
+        "oss:ListObjects",
+        "oss:GetObject"]
+      resource = [
+        "acs:oss:*:*:mybucket",
+        "acs:oss:*:*:mybucket/*"]
+    }]
   description = "this is a policy test"
   force = true
 }
@@ -46,15 +46,12 @@ resource "alicloud_ram_group_policy_attachment" "attach" {
 
 The following arguments are supported:
 
-* `group_name` - (Required, Forces new resource) Name of the RAM group. This name can have a string of 1 to 64 characters, must contain only alphanumeric characters or hyphen "-", and must not begin with a hyphen.
-* `policy_name` - (Required, Forces new resource) Name of the RAM policy. This name can have a string of 1 to 128 characters, must contain only alphanumeric characters or hyphen "-", and must not begin with a hyphen.
-* `policy_type` - (Required, Forces new resource) Type of the RAM policy. It must be `Custom` or `System`.
+* `group_name` - (Required, ForceNew) Name of the RAM group. This name can have a string of 1 to 64 characters, must contain only alphanumeric characters or hyphen "-", and must not begin with a hyphen.
+* `policy_name` - (Required, ForceNew) Name of the RAM policy. This name can have a string of 1 to 128 characters, must contain only alphanumeric characters or hyphen "-", and must not begin with a hyphen.
+* `policy_type` - (Required, ForceNew) Type of the RAM policy. It must be `Custom` or `System`.
 
 ## Attributes Reference
 
 The following attributes are exported:
 
-* `id` - The attachment ID.
-* `group_name` - The group name.
-* `policy_name` - The policy name.
-* `policy_type` - The policy type.
+* `id` - The attachment ID. Composed of policy name, policy type and group name with format `group:<policy_name>:<policy_type>:<group_name>`.

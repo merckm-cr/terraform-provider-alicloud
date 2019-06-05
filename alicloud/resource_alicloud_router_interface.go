@@ -1,13 +1,13 @@
 package alicloud
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/vpc"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func resourceAlicloudRouterInterface() *schema.Resource {
@@ -16,135 +16,169 @@ func resourceAlicloudRouterInterface() *schema.Resource {
 		Read:   resourceAlicloudRouterInterfaceRead,
 		Update: resourceAlicloudRouterInterfaceUpdate,
 		Delete: resourceAlicloudRouterInterfaceDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
-			"opposite_region": &schema.Schema{
+			"opposite_region": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"router_type": &schema.Schema{
+			"router_type": {
 				Type:     schema.TypeString,
 				Required: true,
 				ValidateFunc: validateAllowedStringValue([]string{
 					string(VRouter), string(VBR)}),
-				ForceNew: true,
+				ForceNew:         true,
+				DiffSuppressFunc: routerInterfaceAcceptsideDiffSuppressFunc,
 			},
-			"router_id": &schema.Schema{
+			"router_id": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 			},
-			"role": &schema.Schema{
+			"role": {
 				Type:     schema.TypeString,
 				Required: true,
 				ValidateFunc: validateAllowedStringValue([]string{
 					string(InitiatingSide), string(AcceptingSide)}),
 				ForceNew: true,
 			},
-			"specification": &schema.Schema{
-				Type:         schema.TypeString,
-				Optional:     true,
-				ValidateFunc: validateAllowedStringValue(GetAllRouterInterfaceSpec()),
+			"specification": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				ValidateFunc:     validateAllowedStringValue(GetAllRouterInterfaceSpec()),
+				DiffSuppressFunc: routerInterfaceAcceptsideDiffSuppressFunc,
 			},
-			"access_point_id": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				ForceNew: true,
-			},
-			"opposite_access_point_id": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				ForceNew: true,
-			},
-			"opposite_router_type": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				ValidateFunc: validateAllowedStringValue([]string{
-					string(VRouter), string(VBR)}),
-				Default:  VRouter,
-				ForceNew: true,
-			},
-			"opposite_router_id": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-			},
-			"opposite_interface_id": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-			},
-			"opposite_interface_owner_id": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-			},
-			"name": &schema.Schema{
+			"name": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ValidateFunc: validateInstanceName,
 			},
-			"description": &schema.Schema{
+			"description": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ValidateFunc: validateRouterInterfaceDescription,
 			},
-			"health_check_source_ip": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
+			"health_check_source_ip": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				DiffSuppressFunc: routerInterfaceVBRTypeDiffSuppressFunc,
 			},
-			"health_check_target_ip": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
+			"health_check_target_ip": {
+				Type:             schema.TypeString,
+				Optional:         true,
+				DiffSuppressFunc: routerInterfaceVBRTypeDiffSuppressFunc,
+			},
+			"instance_charge_type": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				Default:      PostPaid,
+				ValidateFunc: validateInstanceChargeType,
+			},
+			"period": {
+				Type:             schema.TypeInt,
+				Optional:         true,
+				ForceNew:         true,
+				Default:          1,
+				DiffSuppressFunc: ecsPostPaidDiffSuppressFunc,
+				ValidateFunc:     validateRouterInterfaceChargeTypePeriod,
+			},
+			"access_point_id": {
+				Type:       schema.TypeString,
+				Computed:   true,
+				Deprecated: "Attribute 'opposite_access_point_id' has been deprecated from version 1.11.0.",
+			},
+			"opposite_access_point_id": {
+				Type:       schema.TypeString,
+				Optional:   true,
+				Deprecated: "Attribute 'opposite_access_point_id' has been deprecated from version 1.11.0.",
+			},
+			"opposite_router_type": {
+				Type:       schema.TypeString,
+				Computed:   true,
+				Deprecated: "Attribute 'opposite_router_type' has been deprecated from version 1.11.0. Use resource alicloud_router_interface_connection's 'opposite_router_type' instead.",
+			},
+			"opposite_router_id": {
+				Type:       schema.TypeString,
+				Computed:   true,
+				Deprecated: "Attribute 'opposite_router_id' has been deprecated from version 1.11.0. Use resource alicloud_router_interface_connection's 'opposite_router_id' instead.",
+			},
+			"opposite_interface_id": {
+				Type:       schema.TypeString,
+				Computed:   true,
+				Deprecated: "Attribute 'opposite_interface_id' has been deprecated from version 1.11.0. Use resource alicloud_router_interface_connection's 'opposite_interface_id' instead.",
+			},
+			"opposite_interface_owner_id": {
+				Type:       schema.TypeString,
+				Computed:   true,
+				Deprecated: "Attribute 'opposite_interface_owner_id' has been deprecated from version 1.11.0. Use resource alicloud_router_interface_connection's 'opposite_interface_owner_id' instead.",
 			},
 		},
 	}
 }
 
 func resourceAlicloudRouterInterfaceCreate(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
-	args, err := buildAlicloudRouterInterfaceCreateArgs(d, meta)
+	client := meta.(*connectivity.AliyunClient)
+	vpcService := VpcService{client}
+	request, err := buildAlicloudRouterInterfaceCreateArgs(d, meta)
 	if err != nil {
-		return err
+		return WrapError(err)
 	}
 
-	response, err := client.vpcconn.CreateRouterInterface(args)
+	raw, err := client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+		return vpcClient.CreateRouterInterface(request)
+	})
 	if err != nil {
-		return fmt.Errorf("CreateRouterInterface got an error: %#v", err)
+		return WrapErrorf(err, DefaultErrorMsg, "alicloud_router_interface", request.GetActionName(), AlibabaCloudSdkGoERROR)
 	}
-
+	addDebug(request.GetActionName(), raw)
+	response, _ := raw.(*vpc.CreateRouterInterfaceResponse)
 	d.SetId(response.RouterInterfaceId)
 
-	if err := client.WaitForRouterInterface(d.Id(), Idle, 300); err != nil {
-		return fmt.Errorf("WaitForRouterInterface %s got error: %#v", Idle, err)
+	if err := vpcService.WaitForRouterInterface(d.Id(), client.RegionId, Idle, 300); err != nil {
+		return WrapError(err)
 	}
 
 	return resourceAlicloudRouterInterfaceUpdate(d, meta)
 }
 
 func resourceAlicloudRouterInterfaceUpdate(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).vpcconn
+	client := meta.(*connectivity.AliyunClient)
 
 	d.Partial(true)
 
-	args, attributeUpdate, err := buildAlicloudRouterInterfaceModifyAttrArgs(d, meta)
+	request, attributeUpdate, err := buildAlicloudRouterInterfaceModifyAttrArgs(d, meta)
 	if err != nil {
-		return err
+		return WrapError(err)
 	}
 
 	if attributeUpdate {
-		if _, err := conn.ModifyRouterInterfaceAttribute(args); err != nil {
-			return fmt.Errorf("ModifyRouterInterfaceAttribute got an error: %#v", err)
+		raw, err := client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+			return vpcClient.ModifyRouterInterfaceAttribute(request)
+		})
+		if err != nil {
+			return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
+		addDebug(request.GetActionName(), raw)
 	}
 
 	if d.HasChange("specification") && !d.IsNewResource() {
 		d.SetPartial("specification")
 		request := vpc.CreateModifyRouterInterfaceSpecRequest()
-		request.RegionId = string(getRegion(d, meta))
+		request.RegionId = string(client.Region)
 		request.RouterInterfaceId = d.Id()
 		request.Spec = d.Get("specification").(string)
-		if _, err := conn.ModifyRouterInterfaceSpec(request); err != nil {
-			return fmt.Errorf("ModifyRouterInterfaceSpec got an error: %#v", err)
+		raw, err := client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+			return vpcClient.ModifyRouterInterfaceSpec(request)
+		})
+		if err != nil {
+			return WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
 		}
+		addDebug(request.GetActionName(), raw)
 	}
 
 	d.Partial(false)
@@ -152,8 +186,10 @@ func resourceAlicloudRouterInterfaceUpdate(d *schema.ResourceData, meta interfac
 }
 
 func resourceAlicloudRouterInterfaceRead(d *schema.ResourceData, meta interface{}) error {
+	client := meta.(*connectivity.AliyunClient)
+	vpcService := VpcService{client}
 
-	ri, err := meta.(*AliyunClient).DescribeRouterInterface(d.Id())
+	object, err := vpcService.DescribeRouterInterface(d.Id(), client.RegionId)
 	if err != nil {
 		if NotFoundError(err) {
 			d.SetId("")
@@ -161,107 +197,129 @@ func resourceAlicloudRouterInterfaceRead(d *schema.ResourceData, meta interface{
 		}
 	}
 
-	d.Set("role", ri.Role)
-	d.Set("specification", ri.Spec)
-	d.Set("name", ri.Name)
-	d.Set("router_id", ri.RouterId)
-	d.Set("router_type", ri.RouterType)
-	d.Set("description", ri.Description)
-	d.Set("access_point_id", ri.AccessPointId)
-	d.Set("opposite_access_point_id", ri.OppositeAccessPointId)
-	d.Set("opposite_router_type", ri.OppositeRouterType)
-	d.Set("opposite_router_id", ri.OppositeRouterId)
-	d.Set("opposite_interface_id", ri.OppositeInterfaceId)
-	d.Set("opposite_interface_owner_id", ri.OppositeInterfaceOwnerId)
-	d.Set("health_check_source_ip", ri.HealthCheckSourceIp)
-	d.Set("health_check_target_ip", ri.HealthCheckTargetIp)
-
+	d.Set("role", object.Role)
+	d.Set("specification", object.Spec)
+	d.Set("name", object.Name)
+	d.Set("router_id", object.RouterId)
+	d.Set("router_type", object.RouterType)
+	d.Set("description", object.Description)
+	d.Set("access_point_id", object.AccessPointId)
+	d.Set("opposite_region", object.OppositeRegionId)
+	d.Set("opposite_router_type", object.OppositeRouterType)
+	d.Set("opposite_router_id", object.OppositeRouterId)
+	d.Set("opposite_interface_id", object.OppositeInterfaceId)
+	d.Set("opposite_interface_owner_id", object.OppositeInterfaceOwnerId)
+	d.Set("health_check_source_ip", object.HealthCheckSourceIp)
+	d.Set("health_check_target_ip", object.HealthCheckTargetIp)
+	if object.ChargeType == "Prepaid" {
+		d.Set("instance_charge_type", PrePaid)
+	} else {
+		d.Set("instance_charge_type", PostPaid)
+	}
 	return nil
 
 }
 
 func resourceAlicloudRouterInterfaceDelete(d *schema.ResourceData, meta interface{}) error {
-	conn := meta.(*AliyunClient).vpcconn
+	client := meta.(*connectivity.AliyunClient)
+	vpcService := VpcService{client}
 
-	args := vpc.CreateDeleteRouterInterfaceRequest()
-	args.RegionId = string(getRegion(d, meta))
-	args.RouterInterfaceId = d.Id()
-
-	return resource.Retry(5*time.Minute, func() *resource.RetryError {
-		if _, err := conn.DeleteRouterInterface(args); err != nil {
-			if IsExceptedError(err, RouterInterfaceIncorrectStatus) || IsExceptedError(err, DependencyViolationRouterInterfaceReferedByRouteEntry) {
-				time.Sleep(5 * time.Second)
-				return resource.RetryableError(fmt.Errorf("Delete router interface timeout and got an error: %#v.", err))
-			}
-			return resource.NonRetryableError(fmt.Errorf("Error deleting interface %s: %#v", d.Id(), err))
+	if object, err := vpcService.DescribeRouterInterface(d.Id(), client.RegionId); err != nil {
+		if NotFoundError(err) {
+			return nil
 		}
+		return WrapError(err)
+	} else if object.Status == string(Active) {
+		if err := vpcService.DeactivateRouterInterface(d.Id()); err != nil {
+			return WrapError(err)
+		}
+	}
+
+	request := vpc.CreateDeleteRouterInterfaceRequest()
+	request.RegionId = string(client.Region)
+	request.RouterInterfaceId = d.Id()
+
+	err := resource.Retry(5*time.Minute, func() *resource.RetryError {
+		raw, err := client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+			return vpcClient.DeleteRouterInterface(request)
+		})
+		if err != nil {
+			if IsExceptedErrors(err, []string{RouterInterfaceIncorrectStatus, DependencyViolationRouterInterfaceReferedByRouteEntry}) {
+				time.Sleep(5 * time.Second)
+				return resource.RetryableError(err)
+			}
+			return resource.NonRetryableError(err)
+		}
+		addDebug(request.GetActionName(), raw)
 		return nil
 	})
+	if err != nil {
+		if IsExceptedErrors(err, []string{InvalidInstanceIdNotFound}) {
+			return nil
+		}
+		WrapErrorf(err, DefaultErrorMsg, d.Id(), request.GetActionName(), AlibabaCloudSdkGoERROR)
+	}
+	return WrapError(vpcService.WaitForRouterInterface(d.Id(), client.RegionId, Deleted, DefaultTimeoutMedium))
 }
 
 func buildAlicloudRouterInterfaceCreateArgs(d *schema.ResourceData, meta interface{}) (*vpc.CreateRouterInterfaceRequest, error) {
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	ecsService := EcsService{client}
 
 	oppositeRegion := d.Get("opposite_region").(string)
-	if err := client.JudgeRegionValidation("opposite_region", oppositeRegion); err != nil {
-		return nil, err
+	if err := ecsService.JudgeRegionValidation("opposite_region", oppositeRegion); err != nil {
+		return nil, WrapError(err)
 	}
 
 	request := vpc.CreateCreateRouterInterfaceRequest()
-	request.RegionId = string(getRegion(d, meta))
 	request.RouterType = d.Get("router_type").(string)
 	request.RouterId = d.Get("router_id").(string)
 	request.Role = d.Get("role").(string)
 	request.Spec = d.Get("specification").(string)
+	request.InstanceChargeType = d.Get("instance_charge_type").(string)
+	if request.InstanceChargeType == string(PrePaid) {
+		period := d.Get("period").(int)
+		request.Period = requests.NewInteger(period)
+		request.PricingCycle = string(Month)
+		if period > 9 {
+			request.Period = requests.NewInteger(period / 12)
+			request.PricingCycle = string(Year)
+		}
+		request.AutoPay = requests.NewBoolean(true)
+	}
 	request.OppositeRegionId = oppositeRegion
-	request.OppositeRouterType = d.Get("opposite_router_type").(string)
-
-	if request.RouterType == string(VBR) {
-		if request.Role != string(InitiatingSide) {
-			return nil, fmt.Errorf("'role': valid value is only 'InitiatingSide' when 'router_type' is 'VBR'.")
-		}
-
-		if request.OppositeRouterType != string(VRouter) {
-			return nil, fmt.Errorf("'opposite_router_type': valid value is only 'VRouter' when 'router_type' is 'VBR'.")
-		}
-
-		v, ok := d.GetOk("access_point_id")
-		if !ok {
-			return nil, fmt.Errorf("'access_point_id': required field is not set when 'router_type' is 'VBR'.")
-		}
-		request.AccessPointId = v.(string)
-	} else if request.OppositeRouterType == string(VBR) {
-		if request.Role != string(AcceptingSide) {
-			return nil, fmt.Errorf("'role': valid value is only 'AcceptingSide' when 'opposite_router_type' is 'VBR'.")
-		}
-
-		v, ok := d.GetOk("opposite_access_point_id")
-		if !ok {
-			return nil, fmt.Errorf("'opposite_access_point_id':required field is not set when 'opposite_router_type' is 'VBR'.")
-		}
-		request.OppositeAccessPointId = v.(string)
-	}
-
+	// Accepting side router interface spec only be Negative and router type only be VRouter.
 	if request.Role == string(AcceptingSide) {
+		request.Spec = string(Negative)
+		request.RouterType = string(VRouter)
+	} else {
 		if request.Spec == "" {
-			request.Spec = string(Negative)
-		} else if request.Spec != string(Negative) {
-			return nil, fmt.Errorf("'specification': valid value is only '%s' when 'role' is 'AcceptingSide'.", Negative)
+			return request, WrapError(Error("'specification': required field is not set when role is %s.", InitiatingSide))
 		}
-	} else if oppositeRegion == getRegionId(d, meta) {
-		if request.RouterType == string(VRouter) {
-			if request.Spec != string(Large2) {
-				return nil, fmt.Errorf("'specification': valid value is only '%s' when 'role' is 'InitiatingSide' and 'region' is equal to 'opposite_region' and 'router_type' is 'VRouter'.", Large2)
-			}
-		} else {
-			if request.Spec != string(Middle1) && request.Spec != string(Middle2) && request.Spec != string(Middle5) && request.Spec != string(Large1) {
-				return nil, fmt.Errorf("'specification': valid values are '%s', '%s', '%s' and '%s' when 'role' is 'InitiatingSide' and 'region' is equal to 'opposite_region' and 'router_type' is 'VBR'.", Large1, Middle1, Middle2, Middle5)
-			}
-		}
-	} else if request.Spec == string(Large2) {
-		return nil, fmt.Errorf("The 'specification' can not be '%s' when 'role' is 'InitiatingSide' and 'region' is not equal to 'opposite_region'.", Large2)
 	}
 
+	// Get VBR access point
+	if request.RouterType == string(VBR) {
+		describeVirtualBorderRoutersRequest := vpc.CreateDescribeVirtualBorderRoutersRequest()
+		values := []string{request.RouterId}
+		filters := []vpc.DescribeVirtualBorderRoutersFilter{{
+			Key:   "VbrId",
+			Value: &values,
+		}}
+		describeVirtualBorderRoutersRequest.Filter = &filters
+		raw, err := client.WithVpcClient(func(vpcClient *vpc.Client) (interface{}, error) {
+			return vpcClient.DescribeVirtualBorderRouters(describeVirtualBorderRoutersRequest)
+		})
+		if err != nil {
+			return request, WrapErrorf(err, DefaultErrorMsg, "alicloud_router_interface", request.GetActionName(), AlibabaCloudSdkGoERROR)
+		}
+		addDebug(request.GetActionName(), raw)
+		response, _ := raw.(*vpc.DescribeVirtualBorderRoutersResponse)
+		if response.TotalCount > 0 {
+			request.AccessPointId = response.VirtualBorderRouterSet.VirtualBorderRouterType[0].AccessPointId
+		}
+	}
+	request.ClientToken = buildClientToken(request.GetActionName())
 	return request, nil
 }
 
@@ -270,58 +328,39 @@ func buildAlicloudRouterInterfaceModifyAttrArgs(d *schema.ResourceData, meta int
 	sourceIp, sourceOk := d.GetOk("health_check_source_ip")
 	targetIp, targetOk := d.GetOk("health_check_target_ip")
 	if sourceOk && !targetOk || !sourceOk && targetOk {
-		return nil, false, fmt.Errorf("The 'health_check_source_ip' and 'health_check_target_ip' should be specified or not at one time.")
+		return nil, false, WrapError(Error("The 'health_check_source_ip' and 'health_check_target_ip' should be specified or not at one time."))
 	}
 
-	args := vpc.CreateModifyRouterInterfaceAttributeRequest()
-	args.RegionId = string(getRegion(d, meta))
-	args.RouterInterfaceId = d.Id()
+	request := vpc.CreateModifyRouterInterfaceAttributeRequest()
+	request.RouterInterfaceId = d.Id()
 
 	attributeUpdate := false
 
 	if d.HasChange("health_check_source_ip") {
 		d.SetPartial("health_check_source_ip")
-		args.HealthCheckSourceIp = sourceIp.(string)
-		args.HealthCheckTargetIp = targetIp.(string)
+		request.HealthCheckSourceIp = sourceIp.(string)
+		request.HealthCheckTargetIp = targetIp.(string)
 		attributeUpdate = true
 	}
 
 	if d.HasChange("health_check_target_ip") {
 		d.SetPartial("health_check_target_ip")
-		args.HealthCheckTargetIp = targetIp.(string)
-		args.HealthCheckSourceIp = sourceIp.(string)
+		request.HealthCheckTargetIp = targetIp.(string)
+		request.HealthCheckSourceIp = sourceIp.(string)
 		attributeUpdate = true
 	}
 
 	if d.HasChange("name") {
 		d.SetPartial("name")
-		args.Name = d.Get("name").(string)
+		request.Name = d.Get("name").(string)
 		attributeUpdate = true
 	}
 
 	if d.HasChange("description") {
 		d.SetPartial("description")
-		args.Description = d.Get("description").(string)
+		request.Description = d.Get("description").(string)
 		attributeUpdate = true
 	}
 
-	if d.HasChange("opposite_router_id") {
-		d.SetPartial("opposite_router_id")
-		args.OppositeRouterId = d.Get("opposite_router_id").(string)
-		attributeUpdate = true
-	}
-
-	if d.HasChange("opposite_interface_id") {
-		d.SetPartial("opposite_interface_id")
-		args.OppositeInterfaceId = d.Get("opposite_interface_id").(string)
-		attributeUpdate = true
-	}
-
-	if d.HasChange("opposite_interface_owner_id") {
-		d.SetPartial("opposite_interface_owner_id")
-		args.OppositeInterfaceOwnerId = requests.Integer(d.Get("opposite_interface_owner_id").(string))
-		attributeUpdate = true
-	}
-
-	return args, attributeUpdate, nil
+	return request, attributeUpdate, nil
 }

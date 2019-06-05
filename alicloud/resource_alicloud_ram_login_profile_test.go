@@ -4,66 +4,179 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/denverdino/aliyungo/ram"
+	"github.com/aliyun/alibaba-cloud-sdk-go/services/ram"
+	"github.com/hashicorp/terraform/helper/acctest"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/terraform"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func TestAccAlicloudRamLoginProfile_basic(t *testing.T) {
-	var v ram.LoginProfile
-	var u ram.User
+	var v *ram.GetLoginProfileResponse
+	resourceId := "alicloud_ram_login_profile.default"
+	ra := resourceAttrInit(resourceId, ramLoginProfilMap)
+	serviceFunc := func() interface{} {
+		return &RamService{testAccProvider.Meta().(*connectivity.AliyunClient)}
+	}
+	rc := resourceCheckInit(resourceId, &v, serviceFunc)
+	rac := resourceAttrCheckInit(rc, ra)
 
+	rand := acctest.RandIntRange(1000000, 9999999)
+	testAccCheck := rac.resourceAttrMapUpdateSet()
 	resource.Test(t, resource.TestCase{
 		PreCheck: func() {
 			testAccPreCheck(t)
 		},
 
 		// module name
-		IDRefreshName: "alicloud_ram_login_profile.profile",
-
-		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckRamLoginProfileDestroy,
+		IDRefreshName: resourceId,
+		Providers:     testAccProviders,
+		CheckDestroy:  testAccCheckRamLoginProfileDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccRamLoginProfileConfig,
+			{
+				Config: testAccRamLoginProfileCreateConfig(rand),
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckRamUserExists(
-						"alicloud_ram_user.user", &u),
-					testAccCheckRamLoginProfileExists(
-						"alicloud_ram_login_profile.profile", &v),
+					testAccCheck(map[string]string{"user_name": fmt.Sprintf("tf-testAcc%sRamLoginProfileConfig-%d", defaultRegionToTest, rand)}),
+				),
+			},
+			{
+				Config: testAccRamLoginProfileUserNameConfig(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"user_name": fmt.Sprintf("tf-testAcc%sRamLoginProfileConfig-%d-N", defaultRegionToTest, rand)}),
+				),
+			},
+			{
+				Config: testAccRamLoginProfilePasswordConfig(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"password": "Yourpassword_1235"}),
+				),
+			},
+			{
+				Config: testAccRamLoginProfilePasswordResetRequiredConfig(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"password_reset_required": "true"}),
+				),
+			},
+			{
+				Config: testAccRamLoginProfileMfaBindRequiredConfig(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{"mfa_bind_required": "true"}),
+				),
+			},
+			{
+				Config: testAccRamLoginProfileAllConfig(rand),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheck(map[string]string{
+						"user_name":               fmt.Sprintf("tf-testAcc%sRamLoginProfileConfig-%d", defaultRegionToTest, rand),
+						"password":                "Yourpassword_1234",
+						"password_reset_required": "false",
+						"mfa_bind_required":       "false",
+					}),
 				),
 			},
 		},
 	})
-
 }
 
-func testAccCheckRamLoginProfileExists(n string, profile *ram.LoginProfile) resource.TestCheckFunc {
-	return func(s *terraform.State) error {
-		rs, ok := s.RootModule().Resources[n]
-		if !ok {
-			return fmt.Errorf("Not found: %s", n)
-		}
+var ramLoginProfilMap = map[string]string{
+	"user_name":               CHECKSET,
+	"password":                CHECKSET,
+	"password_reset_required": CHECKSET,
+	"mfa_bind_required":       CHECKSET,
+}
 
-		if rs.Primary.ID == "" {
-			return fmt.Errorf("No LoginProfile ID is set")
-		}
-
-		client := testAccProvider.Meta().(*AliyunClient)
-		conn := client.ramconn
-
-		request := ram.UserQueryRequest{
-			UserName: rs.Primary.Attributes["user_name"],
-		}
-
-		response, err := conn.GetLoginProfile(request)
-
-		if err != nil {
-			return fmt.Errorf("Error finding login profile %#v", rs.Primary.ID)
-		}
-		*profile = response.LoginProfile
-		return nil
+func testAccRamLoginProfileCreateConfig(rand int) string {
+	return fmt.Sprintf(`
+	resource "alicloud_ram_user" "default" {
+	  name = "tf-testAcc%sRamLoginProfileConfig-%d"
+	  display_name = "displayname"
+	  mobile = "86-18888888888"
+	  email = "hello.uuu@aaa.com"
+	  comments = "yoyoyo"
 	}
+
+	resource "alicloud_ram_login_profile" "default" {
+	  user_name = "${alicloud_ram_user.default.name}"
+	  password = "Yourpassword_1234"
+	}`, defaultRegionToTest, rand)
+}
+func testAccRamLoginProfileUserNameConfig(rand int) string {
+	return fmt.Sprintf(`
+	resource "alicloud_ram_user" "default" {
+	  name = "tf-testAcc%sRamLoginProfileConfig-%d-N"
+	  display_name = "displayname"
+	  mobile = "86-18888888888"
+	  email = "hello.uuu@aaa.com"
+	  comments = "yoyoyo"
+	}
+
+	resource "alicloud_ram_login_profile" "default" {
+	  user_name = "${alicloud_ram_user.default.name}"
+	  password = "Yourpassword_1234"
+	}`, defaultRegionToTest, rand)
+}
+func testAccRamLoginProfilePasswordConfig(rand int) string {
+	return fmt.Sprintf(`
+	resource "alicloud_ram_user" "default" {
+	  name = "tf-testAcc%sRamLoginProfileConfig-%d-N"
+	  display_name = "displayname"
+	  mobile = "86-18888888888"
+	  email = "hello.uuu@aaa.com"
+	  comments = "yoyoyo"
+	}
+
+	resource "alicloud_ram_login_profile" "default" {
+	  user_name = "${alicloud_ram_user.default.name}"
+	  password = "Yourpassword_1235"
+	}`, defaultRegionToTest, rand)
+}
+func testAccRamLoginProfilePasswordResetRequiredConfig(rand int) string {
+	return fmt.Sprintf(`
+	resource "alicloud_ram_user" "default" {
+	  name = "tf-testAcc%sRamLoginProfileConfig-%d-N"
+	  display_name = "displayname"
+	  mobile = "86-18888888888"
+	  email = "hello.uuu@aaa.com"
+	  comments = "yoyoyo"
+	}
+
+	resource "alicloud_ram_login_profile" "default" {
+	  user_name = "${alicloud_ram_user.default.name}"
+	  password = "Yourpassword_1235"
+	  password_reset_required = "true"
+	}`, defaultRegionToTest, rand)
+}
+func testAccRamLoginProfileMfaBindRequiredConfig(rand int) string {
+	return fmt.Sprintf(`
+	resource "alicloud_ram_user" "default" {
+	  name = "tf-testAcc%sRamLoginProfileConfig-%d-N"
+	  display_name = "displayname"
+	  mobile = "86-18888888888"
+	  email = "hello.uuu@aaa.com"
+	  comments = "yoyoyo"
+	}
+
+	resource "alicloud_ram_login_profile" "default" {
+	  user_name = "${alicloud_ram_user.default.name}"
+	  password = "Yourpassword_1235"
+	  password_reset_required = "true"
+	  mfa_bind_required = "true"
+	}`, defaultRegionToTest, rand)
+}
+func testAccRamLoginProfileAllConfig(rand int) string {
+	return fmt.Sprintf(`
+	resource "alicloud_ram_user" "default" {
+	  name = "tf-testAcc%sRamLoginProfileConfig-%d"
+	  display_name = "displayname"
+	  mobile = "86-18888888888"
+	  email = "hello.uuu@aaa.com"
+	  comments = "yoyoyo"
+	}
+
+	resource "alicloud_ram_login_profile" "default" {
+	  user_name = "${alicloud_ram_user.default.name}"
+	  password = "Yourpassword_1234"
+	}`, defaultRegionToTest, rand)
 }
 
 func testAccCheckRamLoginProfileDestroy(s *terraform.State) error {
@@ -74,32 +187,18 @@ func testAccCheckRamLoginProfileDestroy(s *terraform.State) error {
 		}
 
 		// Try to find the login profile
-		client := testAccProvider.Meta().(*AliyunClient)
-		conn := client.ramconn
+		client := testAccProvider.Meta().(*connectivity.AliyunClient)
 
-		request := ram.UserQueryRequest{
-			UserName: rs.Primary.Attributes["user_name"],
-		}
+		request := ram.CreateGetLoginProfileRequest()
+		request.UserName = rs.Primary.Attributes["user_name"]
 
-		_, err := conn.GetLoginProfile(request)
+		_, err := client.WithRamClient(func(ramClient *ram.Client) (interface{}, error) {
+			return ramClient.GetLoginProfile(request)
+		})
 
 		if err != nil && !RamEntityNotExist(err) {
-			return err
+			return WrapError(err)
 		}
 	}
 	return nil
 }
-
-const testAccRamLoginProfileConfig = `
-resource "alicloud_ram_user" "user" {
-  name = "username"
-  display_name = "displayname"
-  mobile = "86-18888888888"
-  email = "hello.uuu@aaa.com"
-  comments = "yoyoyo"
-}
-
-resource "alicloud_ram_login_profile" "profile" {
-  user_name = "${alicloud_ram_user.user.name}"
-  password = "World.123456"
-}`

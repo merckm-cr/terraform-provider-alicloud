@@ -1,13 +1,13 @@
 package alicloud
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-alicloud/alicloud/connectivity"
 )
 
 func dataSourceAlicloudInstanceTypes() *schema.Resource {
@@ -15,7 +15,7 @@ func dataSourceAlicloudInstanceTypes() *schema.Resource {
 		Read: dataSourceAlicloudInstanceTypesRead,
 
 		Schema: map[string]*schema.Schema{
-			"availability_zone": &schema.Schema{
+			"availability_zone": {
 				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
@@ -49,20 +49,39 @@ func dataSourceAlicloudInstanceTypes() *schema.Resource {
 				ForceNew:     true,
 				ValidateFunc: validateAllowedStringValue([]string{string(Vpc), string(Classic)}),
 			},
-			"spot_strategy": &schema.Schema{
+			"spot_strategy": {
 				Type:         schema.TypeString,
 				Optional:     true,
 				ForceNew:     true,
 				Default:      NoSpot,
 				ValidateFunc: validateInstanceSpotStrategy,
 			},
-			"is_outdated": &schema.Schema{
+			"eni_amount": {
+				Type:     schema.TypeInt,
+				Optional: true,
+				ForceNew: true,
+			},
+			"kubernetes_node_role": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ForceNew: true,
+				ValidateFunc: validateAllowedStringValue([]string{
+					string(KubernetesNodeMaster),
+					string(KubernetesNodeWorker),
+				}),
+			},
+			"is_outdated": {
 				Type:     schema.TypeBool,
 				Optional: true,
 			},
 			"output_file": {
 				Type:     schema.TypeString,
 				Optional: true,
+			},
+			"ids": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 			// Computed values.
 			"instance_types": {
@@ -91,7 +110,7 @@ func dataSourceAlicloudInstanceTypes() *schema.Resource {
 							Computed: true,
 							Elem:     &schema.Schema{Type: schema.TypeString},
 						},
-						"gpu": &schema.Schema{
+						"gpu": {
 							Type:     schema.TypeMap,
 							Computed: true,
 							Elem: &schema.Resource{
@@ -107,7 +126,7 @@ func dataSourceAlicloudInstanceTypes() *schema.Resource {
 								},
 							},
 						},
-						"burstable_instance": &schema.Schema{
+						"burstable_instance": {
 							Type:     schema.TypeMap,
 							Computed: true,
 							Elem: &schema.Resource{
@@ -127,7 +146,7 @@ func dataSourceAlicloudInstanceTypes() *schema.Resource {
 							Type:     schema.TypeInt,
 							Computed: true,
 						},
-						"local_storage": &schema.Schema{
+						"local_storage": {
 							Type:     schema.TypeMap,
 							Computed: true,
 							Elem: &schema.Resource{
@@ -155,9 +174,10 @@ func dataSourceAlicloudInstanceTypes() *schema.Resource {
 }
 
 func dataSourceAlicloudInstanceTypesRead(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*AliyunClient)
+	client := meta.(*connectivity.AliyunClient)
+	ecsService := EcsService{client}
 
-	zoneId, validZones, err := client.DescribeAvailableResources(d, meta, InstanceTypeResource)
+	zoneId, validZones, err := ecsService.DescribeAvailableResources(d, meta, InstanceTypeResource)
 	if err != nil {
 		return err
 	}
@@ -189,31 +209,48 @@ func dataSourceAlicloudInstanceTypesRead(d *schema.ResourceData, meta interface{
 	req := ecs.CreateDescribeInstanceTypesRequest()
 	req.InstanceTypeFamily = family
 
-	resp, err := client.ecsconn.DescribeInstanceTypes(req)
+	raw, err := client.WithEcsClient(func(ecsClient *ecs.Client) (interface{}, error) {
+		return ecsClient.DescribeInstanceTypes(req)
+	})
 	if err != nil {
 		return err
 	}
-	if resp == nil || len(resp.InstanceTypes.InstanceType) < 1 {
-		return fmt.Errorf("Your query returned no results. Please change your search criteria and try again.")
-	}
 	var instanceTypes []ecs.InstanceType
-	for _, types := range resp.InstanceTypes.InstanceType {
-		if _, ok := mapInstanceTypes[types.InstanceTypeId]; !ok {
-			continue
-		}
+	resp, _ := raw.(*ecs.DescribeInstanceTypesResponse)
+	if resp != nil {
 
-		if cpu > 0 && types.CpuCoreCount != cpu {
-			continue
-		}
+		eniAmount := d.Get("eni_amount").(int)
+		k8sNode := strings.TrimSpace(d.Get("kubernetes_node_role").(string))
+		for _, types := range resp.InstanceTypes.InstanceType {
+			if _, ok := mapInstanceTypes[types.InstanceTypeId]; !ok {
+				continue
+			}
 
-		if mem > 0 && types.MemorySize != mem {
-			continue
-		}
-		instanceTypes = append(instanceTypes, types)
-	}
+			if cpu > 0 && types.CpuCoreCount != cpu {
+				continue
+			}
 
-	if len(instanceTypes) < 1 {
-		return fmt.Errorf("Your query returned no results. Please change your search criteria and try again.")
+			if mem > 0 && types.MemorySize != mem {
+				continue
+			}
+			if eniAmount > types.EniQuantity {
+				continue
+			}
+			// Kubernetes node does not support instance types which family is "ecs.t5" and spec less that 2c4g
+			// Kubernetes master node does not support gpu instance types which family prefixes with "ecs.gn"
+			if k8sNode != "" {
+				if types.InstanceTypeFamily == "ecs.t5" {
+					continue
+				}
+				if types.CpuCoreCount < 2 || types.MemorySize < 4 {
+					continue
+				}
+				if k8sNode == string(KubernetesNodeMaster) && strings.HasPrefix(types.InstanceTypeFamily, "ecs.gn") {
+					continue
+				}
+			}
+			instanceTypes = append(instanceTypes, types)
+		}
 	}
 
 	return instanceTypesDescriptionAttributes(d, instanceTypes, mapInstanceTypes)
@@ -256,6 +293,9 @@ func instanceTypesDescriptionAttributes(d *schema.ResourceData, types []ecs.Inst
 
 	d.SetId(dataResourceIdHash(ids))
 	if err := d.Set("instance_types", s); err != nil {
+		return err
+	}
+	if err := d.Set("ids", ids); err != nil {
 		return err
 	}
 

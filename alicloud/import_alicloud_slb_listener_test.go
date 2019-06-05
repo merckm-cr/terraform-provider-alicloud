@@ -3,22 +3,45 @@ package alicloud
 import (
 	"testing"
 
+	"github.com/hashicorp/terraform/helper/acctest"
+
 	"github.com/hashicorp/terraform/helper/resource"
 )
 
 func TestAccAlicloudSlbListener_importHttp(t *testing.T) {
-	resourceName := "alicloud_slb_listener.http"
+	resourceName := "alicloud_slb_listener.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSlbListenerDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
-				Config: testAccSlbListenerHttp,
+			{
+				Config: testAccSlbListenerHttpConfig(acctest.RandInt()),
 			},
 
-			resource.TestStep{
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
+func TestAccAlicloudSlbListener_importHttps(t *testing.T) {
+	resourceName := "alicloud_slb_listener.default"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckSlbListenerDestroy,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccSlbListenerHttps,
+			},
+
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,
@@ -28,18 +51,18 @@ func TestAccAlicloudSlbListener_importHttp(t *testing.T) {
 }
 
 func TestAccAlicloudSlbListener_importTcp(t *testing.T) {
-	resourceName := "alicloud_slb_listener.tcp"
+	resourceName := "alicloud_slb_listener.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSlbListenerDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccSlbListenerTcp,
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,
@@ -49,18 +72,18 @@ func TestAccAlicloudSlbListener_importTcp(t *testing.T) {
 }
 
 func TestAccAlicloudSlbListener_importUdp(t *testing.T) {
-	resourceName := "alicloud_slb_listener.udp"
+	resourceName := "alicloud_slb_listener.default"
 
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
 		CheckDestroy: testAccCheckSlbListenerDestroy,
 		Steps: []resource.TestStep{
-			resource.TestStep{
+			{
 				Config: testAccSlbListenerUdp,
 			},
 
-			resource.TestStep{
+			{
 				ResourceName:      resourceName,
 				ImportState:       true,
 				ImportStateVerify: true,
